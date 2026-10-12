@@ -18,6 +18,7 @@ import dashboardRoutes from './routes/dashboard.js';
 import auditRoutes from './routes/audit.js';
 import monthlyReportRoutes from './routes/monthlyReports.js';
 import userRoutes from './routes/users.js';
+import publicRoutes from './routes/public.js';
 import adminRoutes from './routes/admin.js';
 import integrationRoutes from './routes/integration.js';
 import { LANGUAGES, entries, normalizeLang } from './i18n/index.js';
@@ -32,7 +33,12 @@ export function createApp() {
   const app = express();
   app.set('trust proxy', 'loopback');
   app.disable('x-powered-by');
+  // "Use HTTPS only" (upgrade-insecure-requests, HSTS) belongs to a site served over HTTPS. On a plain-HTTP address
+  // such as a computer on the office Wi-Fi it would make a phone fetch the page's scripts over HTTPS, which fail, and
+  // the page stays blank. (localhost is unaffected: browsers treat it as secure.)
+  const httpsSite = (process.env.PUBLIC_URL || '').startsWith('https://');
   app.use(helmet({
+    hsts: httpsSite,
     // OpenStreetMap blocks tile requests that carry no referrer, so send the site's origin (and nothing more) to other sites
     referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
     // the map page loads OpenStreetMap tiles and the front page embeds its hero film from YouTube (privacy-enhanced
@@ -44,6 +50,7 @@ export function createApp() {
         'img-src': ["'self'", 'data:', 'blob:', 'https://*.tile.openstreetmap.org'],
         'connect-src': ["'self'"],
         'worker-src': ["'self'", 'blob:'],
+        'upgrade-insecure-requests': httpsSite ? [] : null,
       },
     },
   }));
@@ -86,6 +93,7 @@ export function createApp() {
   app.use('/api/users', userRoutes);
   app.use('/api/admin', adminRoutes);
   app.use('/api/integration/v1', integrationRoutes);
+  app.use('/api/public', publicRoutes); // no sign-in: the asset card a printed QR code opens
   app.use('/api', (req, res) => res.status(404).json({ error: 'Not found.' }));
 
   // In production the built React app is served by this same server.

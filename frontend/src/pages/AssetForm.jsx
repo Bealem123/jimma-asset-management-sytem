@@ -71,6 +71,7 @@ function AssetPhotoInput({ id, value, set }) {
 // steps, all open at once.
 const STEP_ICONS = ['assets', 'reports', 'map', 'coin', 'approvals'];
 const REVIEW = 4;
+const OTHER_TYPE = '__other'; // "Other" in the Type list: the type is typed in instead
 const isEmpty = (v) => v === '' || v == null;
 
 export default function AssetForm() {
@@ -118,6 +119,7 @@ function AssetWizard({ id, asset }) {
     ? {
       ...Object.fromEntries(Object.entries(asset).filter(([k]) => k !== 'details').map(([k, v]) => [k, v == null ? '' : typeof v === 'number' ? String(v) : v])),
       ...Object.fromEntries(Object.entries(asset.details || {}).map(([k, v]) => [`details.${k}`, v == null ? '' : String(v)])),
+      ...(asset.asset_type_other && !asset.asset_type_id && { asset_type_id: OTHER_TYPE }),
       is_reservable: Boolean(asset.is_reservable),
     }
     : { owner_name: 'Jimma City Administration', ownership_type: 'OWNED', condition: 'GOOD', status: 'REGISTERED', acq_method: '', submit: true, ...defaults }));
@@ -173,7 +175,15 @@ function AssetWizard({ id, asset }) {
     },
     {
       page: 0, name: 'asset_type_id', label: 'Type', type: 'select',
-      options: (v) => opt(keep(lk.types.filter((ty) => String(ty.category_id) === String(v.category_id)), initial.asset_type_id), undefined, { blank: v.category_id ? 'Choose…' : 'Choose a category first' }),
+      options: (v) => [
+        ...opt(keep(lk.types.filter((ty) => String(ty.category_id) === String(v.category_id)), initial.asset_type_id), undefined, { blank: v.category_id ? 'Choose…' : 'Choose a category first' }),
+        ...(v.category_id ? [{ value: OTHER_TYPE, label: 'Other (type it in)' }] : []),
+      ],
+    },
+    {
+      page: 0, name: 'asset_type_other', label: 'Type of asset', required: true, placeholder: 'e.g. Concrete mixer',
+      help: 'Not in the list? Type it here. An administrator can add it to the list later.',
+      show: (v) => v.asset_type_id === OTHER_TYPE,
     },
     { page: 0, name: 'condition', label: 'Physical condition', type: 'select', options: enumOpt(lk.enums.conditions) },
     { page: 0, name: 'function_use', label: 'Function / use', placeholder: 'e.g. Road construction, public transport' },
@@ -268,6 +278,9 @@ function AssetWizard({ id, asset }) {
         if (f.type === 'custom' || f.page === 1 || !shown(f)) continue;
         body[f.name] = values[f.name];
       }
+      // "Other": no listed type, the typed one instead
+      if (body.asset_type_id === OTHER_TYPE) body.asset_type_id = '';
+      else body.asset_type_other = '';
       body.details = Object.fromEntries(detailFields.filter((f) => shown(f) && !isEmpty(values[f.name])).map((f) => [f.name.slice(8), values[f.name]]));
       let saved;
       if (editing) {

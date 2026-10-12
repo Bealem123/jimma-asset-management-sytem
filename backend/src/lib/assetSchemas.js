@@ -7,7 +7,7 @@ import {
 } from './schemas.js';
 
 export const ASSET_FIELDS = [
-  'name', 'description', 'category_id', 'asset_type_id', 'sector_id', 'department_id', 'kifle_ketema_id', 'kebele_id',
+  'name', 'description', 'category_id', 'asset_type_id', 'asset_type_other', 'sector_id', 'department_id', 'kifle_ketema_id', 'kebele_id',
   'location_detail', 'latitude', 'longitude', 'ownership_type', 'owner_name', 'responsible_officer', 'responsible_office', 'current_holder',
   'condition', 'acquisition_date', 'acquisition_cost', 'serial_number', 'registration_number', 'function_use', 'is_reservable',
   'useful_life_years', 'salvage_value',
@@ -20,6 +20,7 @@ export const assetSchema = z.object({
   description: optStr(5000),
   category_id: idRef,
   asset_type_id: optIdRef,
+  asset_type_other: optStr(120), // a type not in the master list ("Other"), typed by the registrar
   sector_id: idRef,
   department_id: optIdRef,
   kifle_ketema_id: optIdRef,

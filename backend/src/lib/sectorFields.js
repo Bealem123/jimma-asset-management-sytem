@@ -9,36 +9,37 @@ import { HttpError } from '../middleware/errors.js';
 //   required -> needed before the asset can be sent for verification
 //   money    -> hidden from roles that may not see financial figures
 //   show     -> asked only when another field of the sector has one of the listed values
+//   private  -> a person's name or a document / identification number: never on the public card a QR code opens
 
 const t = (key, label, more = {}) => ({ key, label, type: 'text', ...more });
 const n = (key, label, more = {}) => ({ key, label, type: 'number', ...more });
 const d = (key, label, more = {}) => ({ key, label, type: 'date', ...more });
 const s = (key, label, options, more = {}) => ({ key, label, type: 'select', options, ...more });
 
-const LICENCE = (label = 'Licence / permit number') => t('licence_no', label);
+const LICENCE = (label = 'Licence / permit number') => t('licence_no', label, { private: true });
 
 export const SECTOR_FIELDS = {
   AGR: [
     s('agri_use', 'Agricultural use', ['Crops', 'Coffee', 'Livestock', 'Nursery / seedlings', 'Irrigation scheme', 'Mixed farming', 'Not in use'], { required: true }),
     n('area_ha', 'Area', { unit: 'ha', required: true }),
     s('water_source', 'Water source', ['Rain-fed', 'River', 'Borehole / well', 'Irrigation canal', 'Other']),
-    t('operator', 'Farmed / operated by', { help: 'The office, cooperative or person working the land.' }),
-    t('title_deed_no', 'Title deed / holding certificate number'),
+    t('operator', 'Farmed / operated by', { private: true, help: 'The office, cooperative or person working the land.' }),
+    t('title_deed_no', 'Title deed / holding certificate number', { private: true }),
   ],
   LND: [
     t('plot_number', 'Plot / parcel number', { required: true }),
     n('area_m2', 'Area', { unit: 'm²', required: true }),
     s('land_use', 'Planned land use', ['Residential', 'Commercial', 'Industrial', 'Institutional', 'Agricultural', 'Mixed use', 'Green / open space', 'Road reserve'], { required: true }),
-    t('title_deed_no', 'Title deed / certificate number'),
+    t('title_deed_no', 'Title deed / certificate number', { private: true }),
     s('lease_status', 'Lease status', ['Not leased', 'Leased', 'Under negotiation', 'In dispute']),
-    t('lessee', 'Lessee', { show: { key: 'lease_status', in: ['Leased', 'Under negotiation'] } }),
+    t('lessee', 'Lessee', { private: true, show: { key: 'lease_status', in: ['Leased', 'Under negotiation'] } }),
     d('lease_end', 'Lease ends on', { show: { key: 'lease_status', in: ['Leased'] } }),
     n('lease_rate_etb', 'Annual lease amount', { unit: 'ETB', money: true, show: { key: 'lease_status', in: ['Leased'] } }),
   ],
   INV: [
     t('project_name', 'Investment project', { required: true }),
-    t('investor', 'Investor / company'),
-    t('licence_no', 'Investment licence number'),
+    t('investor', 'Investor / company', { private: true }),
+    t('licence_no', 'Investment licence number', { private: true }),
     s('project_stage', 'Project stage', ['Planned', 'Under construction', 'Operational', 'Suspended', 'Terminated'], { required: true }),
     n('land_area_m2', 'Land allocated', { unit: 'm²' }),
     n('jobs', 'Jobs created', { help: 'Permanent jobs, if known.' }),
@@ -47,7 +48,7 @@ export const SECTOR_FIELDS = {
     s('premises_type', 'Type of premises', ['Shop', 'Stall', 'Kiosk', 'Market block', 'Commercial building', 'Warehouse', 'Other'], { required: true }),
     t('unit_no', 'Unit / stall number'),
     n('floor_area_m2', 'Floor area', { unit: 'm²' }),
-    t('occupant', 'Business operating in it', { help: 'Trading name of the tenant or user, if any.' }),
+    t('occupant', 'Business operating in it', { private: true, help: 'Trading name of the tenant or user, if any.' }),
     LICENCE('Trade licence number'),
     n('monthly_rent_etb', 'Monthly rent', { unit: 'ETB', money: true }),
   ],
@@ -55,7 +56,7 @@ export const SECTOR_FIELDS = {
     s('facility_type', 'Type of facility', ['Warehouse', 'Processing plant', 'Storage yard', 'Packing house', 'Other'], { required: true }),
     s('commodity', 'Main commodity', ['Coffee', 'Fruit and vegetables', 'Spices', 'Livestock products', 'Other']),
     n('capacity_t', 'Storage / processing capacity', { unit: 'tonnes' }),
-    t('operator', 'Operated by'),
+    t('operator', 'Operated by', { private: true }),
     LICENCE('Export licence number'),
   ],
   SRV: [
@@ -69,7 +70,7 @@ export const SECTOR_FIELDS = {
     t('product', 'What it produces'),
     t('capacity', 'Production capacity', { help: 'e.g. 500 blocks a day' }),
     n('power_kva', 'Installed power', { unit: 'kVA' }),
-    t('operator', 'Operated by'),
+    t('operator', 'Operated by', { private: true }),
     LICENCE(),
   ],
   CON: [
@@ -77,8 +78,8 @@ export const SECTOR_FIELDS = {
     t('make_model', 'Make and model', { show: { key: 'con_kind', in: ['Construction machine'] } }),
     n('engine_hours', 'Engine hours', { unit: 'h', show: { key: 'con_kind', in: ['Construction machine'] } }),
     t('project_name', 'Project', { show: { key: 'con_kind', in: ['Construction site', 'Building under construction', 'Material yard'] } }),
-    t('contractor', 'Contractor', { show: { key: 'con_kind', in: ['Construction site', 'Building under construction'] } }),
-    t('permit_no', 'Building / construction permit number', { show: { key: 'con_kind', in: ['Construction site', 'Building under construction'] } }),
+    t('contractor', 'Contractor', { private: true, show: { key: 'con_kind', in: ['Construction site', 'Building under construction'] } }),
+    t('permit_no', 'Building / construction permit number', { private: true, show: { key: 'con_kind', in: ['Construction site', 'Building under construction'] } }),
     d('completion_date', 'Planned completion', { show: { key: 'con_kind', in: ['Construction site', 'Building under construction'] } }),
   ],
   TOU: [
@@ -94,8 +95,8 @@ export const SECTOR_FIELDS = {
     n('year', 'Year of manufacture', { show: { key: 'trn_kind', in: ['Vehicle'] } }),
     s('fuel', 'Fuel', ['Diesel', 'Petrol', 'Electric', 'Hybrid'], { show: { key: 'trn_kind', in: ['Vehicle'] } }),
     n('seats', 'Seats', { show: { key: 'trn_kind', in: ['Vehicle'] } }),
-    t('chassis_no', 'Chassis number', { show: { key: 'trn_kind', in: ['Vehicle'] } }),
-    t('engine_no', 'Engine number', { show: { key: 'trn_kind', in: ['Vehicle'] } }),
+    t('chassis_no', 'Chassis number', { private: true, show: { key: 'trn_kind', in: ['Vehicle'] } }),
+    t('engine_no', 'Engine number', { private: true, show: { key: 'trn_kind', in: ['Vehicle'] } }),
     n('odometer_km', 'Odometer', { unit: 'km', show: { key: 'trn_kind', in: ['Vehicle'] } }),
     d('insurance_until', 'Insurance valid until', { show: { key: 'trn_kind', in: ['Vehicle'] } }),
     n('parking_spaces', 'Parking spaces / bays', { show: { key: 'trn_kind', in: ['Bus / taxi terminal', 'Parking area'] } }),
@@ -114,14 +115,14 @@ export const SECTOR_FIELDS = {
     t('unit_no', 'Unit / plot number'),
     n('floor_area_m2', 'Area', { unit: 'm²' }),
     s('occupancy', 'Occupancy', ['Rented', 'Vacant', 'Under maintenance'], { required: true }),
-    t('tenant', 'Tenant', { show: { key: 'occupancy', in: ['Rented'] } }),
-    t('contract_no', 'Rental contract number', { show: { key: 'occupancy', in: ['Rented'] } }),
+    t('tenant', 'Tenant', { private: true, show: { key: 'occupancy', in: ['Rented'] } }),
+    t('contract_no', 'Rental contract number', { private: true, show: { key: 'occupancy', in: ['Rented'] } }),
     d('contract_end', 'Contract ends on', { show: { key: 'occupancy', in: ['Rented'] } }),
     n('monthly_rent_etb', 'Monthly rent', { unit: 'ETB', money: true, show: { key: 'occupancy', in: ['Rented'] } }),
   ],
   ASK: [
     t('local_name', 'Local name of the asset or charge', { required: true, help: 'As it is known locally.' }),
-    t('payer', 'Who pays / uses it'),
+    t('payer', 'Who pays / uses it', { private: true }),
     t('legal_basis', 'Legal basis', { help: 'Proclamation, regulation or council decision, if known.' }),
     t('collection_point', 'Where it is collected or kept'),
   ],

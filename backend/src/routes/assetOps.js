@@ -13,6 +13,7 @@ import { acquisitionSchema, assertNoDuplicates, assetSchema } from '../lib/asset
 import {
   assetCode, fail, findVisibleByCodeOrId, getVisibleAsset, guardAsset, resolveRefs,
 } from '../lib/assetGuards.js';
+import { assetByToken, ensureToken } from '../lib/publicAsset.js';
 import { submitOrExecute } from '../lib/requests.js';
 import {
   DISPOSAL_METHODS, OWNERSHIP_TYPES, REVENUE_TYPES,
@@ -47,17 +48,23 @@ router.get('/map', async (req, res) => {
 
 // ------------------------------------------------------------------ QR code / barcode / scanning
 
-const qrPayload = (code) => (process.env.PUBLIC_URL ? `${process.env.PUBLIC_URL.replace(/\/$/, '')}/scan/${code}` : code);
+// A printed QR code opens the asset's public card (/a/<token>) on any phone camera; the in-app scanner reads it too.
+// The address is PUBLIC_URL (the address phones can reach) or, without it, the address this page was opened on.
+// The barcode on the label keeps the plain Asset ID, for barcode readers and the in-app scanner.
+async function qrPayload(req, asset) {
+  const base = process.env.PUBLIC_URL || `${req.protocol}://${req.get('x-forwarded-host') || req.get('host')}`;
+  return `${base.replace(/\/$/, '')}/a/${await ensureToken(asset)}`;
+}
 
 router.get('/:id/qr.svg', async (req, res) => {
   const asset = await getVisibleAsset(req);
-  const svg = await QRCode.toString(qrPayload(asset.asset_code), { type: 'svg', margin: 1, errorCorrectionLevel: 'M' });
+  const svg = await QRCode.toString(await qrPayload(req, asset), { type: 'svg', margin: 1, errorCorrectionLevel: 'M' });
   res.type('image/svg+xml').send(svg);
 });
 
 router.get('/:id/qr.png', async (req, res) => {
   const asset = await getVisibleAsset(req);
-  const png = await QRCode.toBuffer(qrPayload(asset.asset_code), { margin: 1, width: 400, errorCorrectionLevel: 'M' });
+  const png = await QRCode.toBuffer(await qrPayload(req, asset), { margin: 1, width: 400, errorCorrectionLevel: 'M' });
   res.type('image/png').send(png);
 });
 
@@ -68,10 +75,12 @@ const scanSchema = z.object({
   longitude: lng,
 });
 
-/** Resolve a scanned QR/barcode (an asset code, or a URL ending in one) and record who scanned and when. */
+/** Resolve a scanned QR/barcode (an asset code, a public card address, or a URL ending in a code) and record the scan. */
 router.post('/scan', async (req, res) => {
   const d = parse(scanSchema, req.body);
-  const match = /AST-\d{6}/i.exec(d.code);
+  const card = /\/a\/([A-Za-z0-9_-]{16,32})\/?$/.exec(d.code.trim());
+  const byToken = card ? await assetByToken(card[1]) : null;
+  const match = byToken ? [byToken.asset_code] : /AST-\d{6}/i.exec(d.code);
   if (!match) throw fail('code', 'This is not a Jimma asset code.');
   const asset = await findVisibleByCodeOrId(req.user, match[0]);
   await db('scan_events').insert({ asset_id: asset.id, user_id: req.user.id, context: d.context, latitude: d.latitude, longitude: d.longitude });

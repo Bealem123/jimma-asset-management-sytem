@@ -55,6 +55,16 @@ describe('what each sector records about its own assets', () => {
     assert.ok(history.some((h) => h.action === 'UPDATE' && JSON.stringify(h).includes('details')));
   });
 
+  it('a type that is not in the list can be typed in, and choosing a listed type replaces it', async () => {
+    const a = await createAsset(fx, fx.users.officer, { asset_type_id: null, asset_type_other: 'Concrete mixer' });
+    const shown = (await api('get', `/api/assets/${a.id}`, fx.users.officer)).body.asset;
+    assert.equal(shown.asset_type_other, 'Concrete mixer');
+    assert.equal(shown.asset_type_name, 'Concrete mixer'); // lists, the asset page and exports show it as its type
+    const res = await api('patch', `/api/assets/${a.id}`, fx.users.officer).send({ asset_type_id: fx.excavator.id }).expect(200);
+    assert.equal(res.body.asset_type_other, null);
+    assert.equal(res.body.asset_type_name, 'Excavator');
+  });
+
   it('a money field (such as the rent) is hidden from roles that may not see money', async () => {
     const a = await createAsset(fx, fx.users.officer, { sector_id: fx.business.id, department_id: null, details: { premises_type: 'Shop', monthly_rent_etb: 4200, unit_no: 'B-12' } });
     // the Inspector checks condition, not money

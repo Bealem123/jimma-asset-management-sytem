@@ -177,6 +177,33 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 .review-block:first-of-type { border-top: 0; padding-top: 0; }
 .review-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .review-head h3 { margin: 0 0 8px; }
+/* ---------- the public asset card (what a printed QR code opens, no sign-in) ---------- */
+.pa { min-height: 100vh; background: var(--page); display: flex; flex-direction: column; }
+.pa-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; background: var(--topbar-bg, var(--surface)); border-bottom: 1px solid var(--line); }
+.pa-brand { display: flex; align-items: center; gap: 10px; color: var(--ink); text-decoration: none; }
+.pa-brand span { display: grid; line-height: 1.2; }
+.pa-brand small { color: var(--ink-3); }
+.pa-main { width: 100%; max-width: 1040px; margin: 0 auto; padding: 20px 16px 8px; flex: 1; }
+.pa-hero { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 24px; align-items: start; margin-bottom: 18px; }
+.pa-photo { display: block; aspect-ratio: 4 / 3; border-radius: var(--radius); overflow: hidden; background: var(--surface); border: 1px solid var(--line); }
+.pa-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pa-nophoto { display: grid; place-items: center; font-size: 3rem; }
+.pa-thumbs { display: flex; gap: 8px; margin-top: 8px; overflow-x: auto; }
+.pa-thumbs button { flex: none; width: 64px; height: 48px; padding: 0; border: 2px solid transparent; border-radius: 8px; overflow: hidden; background: none; cursor: pointer; }
+.pa-thumbs button.is-on { border-color: var(--accent); }
+.pa-thumbs img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pa-code { margin: 0; font-weight: 700; color: var(--accent); letter-spacing: 0.04em; }
+.pa-title h1 { margin: 4px 0 6px; font-size: 1.8rem; line-height: 1.2; }
+.pa-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.pa-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.pa-grid .card { margin-top: 0; }
+.pa-note { margin: 18px 0 0; }
+.pa-foot { text-align: center; padding: 18px 16px 24px; }
+@media (max-width: 720px) {
+  .pa-hero, .pa-grid { grid-template-columns: 1fr; }
+  .pa-title h1 { font-size: 1.45rem; }
+  .pa-brand img { width: 34px; height: 34px; }
+}
 .photo-reminder { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .who-text { display: grid; min-width: 0; line-height: 1.25; }
 .who-text strong { font-size: 1.05rem; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -15,6 +15,8 @@ export async function resolveRefs(user, merged, changedKeys) {
   if (!category) throw fail('category_id', 'Choose a category.');
   if (changed('category_id') && !category.is_active) throw fail('category_id', 'This category is inactive.');
 
+  // a type is either one from the list or one typed in, never both
+  if (merged.asset_type_id) out.asset_type_other = null;
   if (merged.asset_type_id) {
     const type = await db('asset_types').where({ id: merged.asset_type_id }).first();
     if (!type || type.category_id !== merged.category_id) throw fail('asset_type_id', 'This type does not belong to the chosen category.');

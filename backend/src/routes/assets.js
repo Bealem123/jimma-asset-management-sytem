@@ -306,7 +306,8 @@ router.patch('/:id', guardAsset('asset.edit'), async (req, res) => {
   if (!inScope(req.user, before)) throw forbidden();
   if ('serial_number' in patch || 'registration_number' in patch) await assertNoDuplicates(merged, before.id);
 
-  const update = Object.fromEntries(ASSET_FIELDS.filter((k) => k in patch || k === 'kifle_ketema_id').map((k) => [k, resolved[k]]));
+  // choosing a listed type clears a typed-in one
+  const update = Object.fromEntries(ASSET_FIELDS.filter((k) => k in patch || k === 'kifle_ketema_id' || (k === 'asset_type_other' && 'asset_type_id' in patch)).map((k) => [k, resolved[k]]));
   const changes = diff(before, { ...before, ...update }, ASSET_FIELDS);
   // the sector's own fields: re-checked when they or the sector change (another sector keeps only what applies to it)
   if ('details' in patch || 'sector_id' in patch) {

@@ -16,7 +16,7 @@ export function assetBase() {
     .select(
       'assets.*',
       'c.name as category_name',
-      't.name as asset_type_name',
+      db.raw('COALESCE(t.name, assets.asset_type_other) AS asset_type_name'), // a listed type, or the one typed in
       's.name as sector_name',
       's.code as sector_code',
       'd.name as department_name',

@@ -30,6 +30,7 @@ import { t } from './i18n.jsx';
 
 // Heavy screens (map, camera scanner, barcodes, charts) load only when opened, so the first page stays light on a phone.
 const Scan = lazy(() => import('./pages/Scan.jsx'));
+const PublicAsset = lazy(() => import('./pages/PublicAsset.jsx'));
 const MapPage = lazy(() => import('./pages/MapPage.jsx'));
 const Labels = lazy(() => import('./pages/Labels.jsx'));
 const Analytics = lazy(() => import('./pages/Analytics.jsx'));
@@ -329,6 +330,15 @@ function Public() {
 
 export default function App() {
   const { user, loading } = useAuth();
+  const location = useLocation();
+  // what a printed QR code opens: the public asset card, the same for everyone, signed in or not
+  if (location.pathname.startsWith('/a/')) {
+    return (
+      <Suspense fallback={<div className="login"><Loading /></div>}>
+        <Routes><Route path="/a/:token" element={<PublicAsset />} /></Routes>
+      </Suspense>
+    );
+  }
   if (loading) return <div className="login"><Loading text="Signing you in…" /></div>;
   if (!user) return <Public />;
   if (user.must_change_password) return <ChoosePassword />;

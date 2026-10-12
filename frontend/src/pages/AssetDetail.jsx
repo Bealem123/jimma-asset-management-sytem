@@ -215,7 +215,7 @@ export default function AssetDetail() {
             <div className="qr-block">
               <AuthImage path={`${path}/qr.svg`} alt={`QR code for ${a.asset_code}`} width={140} />
               <div>
-                <p className="muted small" style={{ marginTop: 0 }}>{t('Print it and fix it to the asset. Scanning it opens this record, and can be used in inspections and physical verification.')}</p>
+                <p className="muted small" style={{ marginTop: 0 }}>{t("Print it and fix it to the asset. Any phone camera that scans it opens the asset's public card, with its photos and without money or personal details. In this system's scanner it opens this full record, for inspections and physical verification.")}</p>
                 <Link className="btn btn-small" to={`/labels?ids=${a.id}`}>{t('Print label')}</Link>{' '}
                 <Link className="btn btn-small" to="/scan">{t('Open scanner')}</Link>
               </div>
