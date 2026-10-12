@@ -1,0 +1,8 @@
+node_modules
+.env
+uploads
+uploads-test
+dist
+backups
+backups-test
+credentials

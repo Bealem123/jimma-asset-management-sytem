@@ -1,0 +1,220 @@
+/* The public front page (Landing.jsx). Everything is scoped under .lp so the app's own styles are untouched. */
+
+.lp {
+  --lp-ink: #121614;
+  --lp-ink-2: #4b524f;
+  --lp-paper: #ffffff;
+  --lp-white: #ffffff;
+  --lp-line: rgba(18, 22, 20, 0.14);
+  --lp-on-photo: #ffffff;
+  --lp-radius: 28px;
+  --lp-gutter: clamp(20px, 6.5vw, 96px);
+  position: relative;
+  background: #0f1513;
+  color: var(--lp-ink);
+  font-family: 'DM Sans Variable', 'Noto Serif Ethiopic', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  line-height: 1.55;
+  overflow-x: clip;
+}
+/* always light, as in the design: the white sections stay white whatever the system or app theme */
+.lp { color-scheme: light; }
+
+.lp-serif { font-family: 'Playfair Display', 'Noto Serif Ethiopic', Georgia, 'Times New Roman', serif; font-weight: 400; letter-spacing: -0.01em; }
+.lp a { color: inherit; text-decoration: none; }
+.lp-small { font-size: 0.78rem; color: inherit; opacity: 0.8; margin: 0; }
+.lp-arrow { font-size: 0.95em; }
+
+/* ---------- navigation (lies over the hero and scrolls away with it) ---------- */
+.lp-nav {
+  position: absolute; inset: 0 0 auto; z-index: 50;
+  display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 16px;
+  padding: 26px var(--lp-gutter); color: var(--lp-on-photo);
+}
+.lp-logo { font-family: 'Playfair Display', Georgia, serif; font-size: 1.05rem; letter-spacing: 0.32em; margin: 0; white-space: nowrap; }
+.lp-logo b { font-weight: 700; letter-spacing: 0.32em; }
+.lp-links { display: flex; gap: 4px; }
+.lp-links a { padding: 6px 14px; border-radius: 999px; font-size: 0.7rem; letter-spacing: 0.12em; text-transform: uppercase; transition: background 0.25s; }
+.lp-links a:hover { background: rgba(255, 255, 255, 0.14); }
+.lp-links a.is-on { background: #fff; color: #121614; }
+.lp-nav-end { display: flex; justify-content: flex-end; align-items: center; gap: 10px; }
+.lp-lang select { background: rgba(255, 255, 255, 0.12); color: #fff; border: 1px solid rgba(255, 255, 255, 0.35); box-shadow: none; font-size: 0.75rem; padding: 5px 12px 5px 34px; }
+.lp-lang select option { color: #121614; }
+.lp-lang .nav-icon { color: #fff; left: 10px; width: 16px; height: 16px; }
+
+/* ---------- pills and links ---------- */
+.lp-pill {
+  display: inline-flex; align-items: center; gap: 0.45em; white-space: nowrap;
+  padding: 0.62em 1.15em; border-radius: 999px; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase;
+  transition: transform 0.25s ease, background 0.25s ease, color 0.25s ease;
+}
+.lp-pill:hover { transform: translateY(-1px); }
+.lp-pill:focus-visible, .lp-links a:focus-visible, .lp-text-link:focus-visible, .lp-begin:focus-visible { outline: 2px solid #f0b45a; outline-offset: 3px; }
+.lp-pill-light { background: #fff; color: #121614 !important; }
+.lp-pill-light:hover { background: #f0ece4; }
+.lp-pill-dark { background: #121614; color: #fff !important; }
+.lp-pill-dark:hover { background: #2a312e; }
+.lp-text-link { font-size: 0.7rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--lp-ink) !important; }
+.lp-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; margin-top: 22px; }
+
+/* ---------- panels that slide over each other ---------- */
+.lp-stack > .lp-panel {
+  position: sticky; top: var(--stick, 0px);
+  min-height: 100vh; min-height: 100svh;
+  border-radius: var(--lp-radius) var(--lp-radius) 0 0;
+  overflow: hidden; isolation: isolate;
+  transform-origin: 50% 0;
+  transform: scale(calc(1 - var(--covered, 0) * 0.03));
+}
+.lp-stack > .lp-panel:first-child { border-radius: 0; }
+/* the panel being covered darkens a little: depth */
+.lp-stack > .lp-panel::after {
+  content: ''; position: absolute; inset: 0; z-index: 30; pointer-events: none;
+  background: #000; opacity: calc(var(--covered, 0) * 0.25);
+}
+
+/* a photo when there is one, its colour gradient otherwise */
+.lp-hero, .lp-feature, .lp-closing, .lp-card, .lp-about-photo {
+  background: var(--photo, none) center / cover no-repeat, var(--fallback);
+  color: var(--lp-on-photo);
+}
+.lp-shade { position: absolute; inset: 0; z-index: 0; background: linear-gradient(180deg, rgba(0, 0, 0, 0.2) 0%, rgba(0, 0, 0, 0) 35%, rgba(0, 0, 0, 0.32) 100%); }
+.lp-panel > :not(.lp-shade) { position: relative; z-index: 1; }
+/* text straight on the photo, as in the design: a soft shadow keeps it readable on light photos too */
+.lp-hero h1, .lp-feature h2, .lp-closing h2, .lp-card h3, .lp-begin {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 22px rgba(0, 0, 0, 0.35);
+}
+.lp-feature p, .lp-closing p, .lp-card p {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45), 0 1px 14px rgba(0, 0, 0, 0.35);
+}
+
+.lp-edge {
+  position: absolute !important; top: 50%; z-index: 2;
+  writing-mode: vertical-rl; transform: translateY(-50%) rotate(180deg);
+  font-size: 0.62rem; letter-spacing: 0.24em; text-transform: uppercase; color: rgba(255, 255, 255, 0.85);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+.lp-edge-left { left: clamp(10px, 2.2vw, 30px); }
+.lp-edge-right { right: clamp(10px, 2.2vw, 30px); }
+
+/* ---------- hero ---------- */
+.lp-hero { --fallback: radial-gradient(ellipse 70% 45% at 50% 0%, rgba(240, 168, 72, 0.85), rgba(240, 168, 72, 0) 70%), linear-gradient(180deg, #8a5a2b 0%, #4b3a2a 30%, #262622 62%, #111412 100%); }
+/* the hero film covers the panel like a photo would: 16:9, centred, slightly enlarged to hide the player's edges */
+.lp-video { position: absolute !important; inset: 0; z-index: 0 !important; overflow: hidden; pointer-events: none; opacity: 0; transition: opacity 1.6s ease; }
+.lp-video.is-on { opacity: 1; }
+.lp-video iframe {
+  position: absolute; top: 50%; left: 50%; border: 0;
+  width: 100vw; height: 56.25vw; min-width: 177.78vh; min-height: 100vh;
+  transform: translate(-50%, -50%) scale(1.18);
+  opacity: 0; transition: opacity 1.2s ease; /* two players take turns (see HeroVideo): the shown one is visible */
+}
+.lp-video iframe.is-shown { opacity: 1; }
+.lp-hero-text { position: absolute !important; left: max(var(--lp-gutter), 27vw); right: var(--lp-gutter); bottom: clamp(56px, 13vh, 140px); }
+.lp-hero h1 { font-size: clamp(2.2rem, 4.8vw, 4.4rem); line-height: 1.04; max-width: 13em; margin: 0; color: #fff; }
+.lp-begin { display: inline-flex; align-items: center; gap: 14px; margin-top: 30px; font-size: 0.68rem; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(255, 255, 255, 0.85) !important; }
+.lp-line { display: inline-block; height: 1px; background: currentColor; opacity: 0.7; }
+.lp-begin .lp-line { width: clamp(80px, 22vw, 320px); }
+
+/* ---------- about ---------- */
+.lp-white { background: var(--lp-paper); color: var(--lp-ink); }
+.lp-about {
+  display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr); gap: clamp(28px, 6vw, 96px); align-items: center;
+  min-height: inherit; padding: clamp(64px, 12vh, 140px) var(--lp-gutter);
+}
+.lp-eyebrow { display: flex; align-items: center; gap: 14px; margin: 0 0 18px; font-size: 0.68rem; letter-spacing: 0.16em; text-transform: uppercase; color: var(--lp-ink-2); }
+.lp-eyebrow .lp-line { width: 28px; }
+.lp-about h2 { font-size: clamp(1.9rem, 3.1vw, 2.9rem); font-weight: 500; line-height: 1.12; margin: 0 0 18px; max-width: 15em; }
+.lp-body { font-size: 0.92rem; color: var(--lp-ink-2); max-width: 36em; margin: 0; }
+.lp-langs { display: flex; align-items: center; gap: 12px; margin-top: 26px; color: var(--lp-ink-2); }
+.lp-bubbles { display: flex; }
+.lp-bubbles i {
+  font-style: normal; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 0.66rem; font-weight: 700; color: #fff; border: 2px solid var(--lp-paper); margin-left: -8px;
+}
+.lp-bubbles i:first-child { margin-left: 0; background: #2f4a44; }
+.lp-bubbles i:nth-child(2) { background: #b8732c; }
+.lp-bubbles i:nth-child(3) { background: #5b6b4a; }
+/* a cut-out picture (transparent PNG) standing straight on the page: no frame, no backdrop, nothing cropped */
+.lp-about-photo { aspect-ratio: 4 / 3; background: var(--photo, none) center / contain no-repeat; }
+
+/* ---------- features ---------- */
+/* text in the upper left of each panel, as in the design */
+.lp-feature, .lp-closing { display: flex; align-items: flex-start; }
+.lp-feature-text { max-width: 30rem; margin-left: var(--lp-gutter); padding: clamp(84px, 19vh, 200px) 0 96px; }
+.lp-feature h2, .lp-closing h2 { font-size: clamp(1.9rem, 3vw, 2.7rem); line-height: 1.1; margin: 0 0 14px; color: #fff; }
+.lp-feature p, .lp-closing p { font-size: 0.9rem; margin: 0; color: rgba(255, 255, 255, 0.95); }
+/* a soft, shapeless shadow only behind the text block: no visible box, the rest of the photo stays clear */
+.lp-feature-text::before {
+  content: ''; position: absolute; inset: 4% -22% -12% -14%; z-index: -1; pointer-events: none;
+  background: radial-gradient(closest-side, rgba(10, 12, 14, 0.42), rgba(10, 12, 14, 0.22) 55%, rgba(10, 12, 14, 0));
+}
+.lp-feature[data-tone='register'] { --fallback: radial-gradient(ellipse 60% 50% at 70% 60%, rgba(214, 236, 226, 0.35), rgba(0, 0, 0, 0) 70%), linear-gradient(170deg, #d49a80 0%, #8f8a72 28%, #4f7a6d 52%, #1f3a33 100%); }
+/* register.jpg is 2:1 like the panel with the padlock right of centre; narrower screens crop around the padlock */
+.lp-feature[data-tone='register'] { background-position: 63% 50%; }
+/* report.jpg: the calendar sits at 66% across; narrower screens crop around it */
+.lp-feature[data-tone='report'] { background-position: 66% 50%; }
+.lp-feature[data-tone='inspect'] { --fallback: radial-gradient(ellipse 50% 60% at 85% 20%, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0) 70%), linear-gradient(180deg, #dfe5e8 0%, #8d99a1 45%, #3b464b 75%, #1c2427 100%); }
+.lp-feature[data-tone='map'] { --fallback: linear-gradient(180deg, #cdd0cf 0%, #a7aaa8 40%, #8c8676 62%, #a1814e 80%, #5b4528 100%); }
+.lp-feature[data-tone='report'] { --fallback: radial-gradient(ellipse 45% 55% at 82% 62%, rgba(232, 150, 60, 0.85), rgba(232, 150, 60, 0) 70%), linear-gradient(120deg, #1d2a28 0%, #2f3f3b 45%, #4a3a26 100%); }
+
+/* ---------- every level of the City ---------- */
+.lp-levels { padding: clamp(64px, 12vh, 130px) var(--lp-gutter); }
+.lp-levels-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
+.lp-levels h2 { font-size: clamp(1.9rem, 3vw, 2.7rem); line-height: 1.1; margin: 0; }
+.lp-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 30px; }
+.lp-card { position: relative; aspect-ratio: 1.57; min-height: 280px; border-radius: 6px; overflow: hidden; isolation: isolate; display: flex; align-items: flex-start; }
+.lp-card .lp-shade { background: radial-gradient(ellipse 80% 75% at 20% 24%, rgba(8, 12, 10, 0.6), rgba(8, 12, 10, 0.26) 55%, rgba(8, 12, 10, 0) 88%); }
+.lp-card-text { position: relative; z-index: 1; padding: 28px; max-width: 26rem; }
+.lp-card h3 { font-size: 1.45rem; margin: 0 0 10px; color: #fff; }
+.lp-card p { font-size: 0.82rem; margin: 12px 0 0; color: rgba(255, 255, 255, 0.86); }
+.lp-tags { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; padding: 0; margin: 0; }
+.lp-tags li { background: #fff; color: #121614; border-radius: 999px; padding: 3px 10px; font-size: 0.64rem; font-weight: 600; }
+.lp-card[data-tone='mayor'] { --fallback: radial-gradient(ellipse 50% 60% at 40% 80%, rgba(238, 160, 70, 0.7), rgba(0, 0, 0, 0) 70%), linear-gradient(160deg, #3b4a47 0%, #24302d 60%, #151b19 100%); }
+.lp-card[data-tone='kifle'] { --fallback: radial-gradient(ellipse 40% 45% at 60% 70%, rgba(242, 180, 90, 0.55), rgba(0, 0, 0, 0) 70%), linear-gradient(180deg, #3a4c58 0%, #233038 60%, #12191d 100%); }
+.lp-card[data-tone='kebele'] { --fallback: linear-gradient(180deg, #2f4a3c 0%, #1f3a2c 50%, #12241b 100%); }
+.lp-card[data-tone='sector'] { --fallback: radial-gradient(ellipse 60% 40% at 50% 15%, rgba(232, 150, 60, 0.75), rgba(0, 0, 0, 0) 70%), linear-gradient(180deg, #6a4a2e 0%, #3c3328 45%, #1d1d1b 100%); }
+
+/* ---------- closing ---------- */
+.lp-closing { --fallback: radial-gradient(ellipse 60% 50% at 50% 10%, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0) 70%), linear-gradient(180deg, #c7d4d9 0%, #7f949c 40%, #3c5058 70%, #142025 100%); }
+.lp-closing .lp-feature-text { max-width: 34rem; }
+/* closing.jpg: Jimma at night, the monument at 57% across; narrower screens crop around it */
+.lp-closing { background-position: 57% 50%; }
+.lp-big { font-size: clamp(2.1rem, 3.8vw, 3.4rem) !important; line-height: 1.05 !important; }
+
+/* ---------- footer ---------- */
+.lp-footer {
+  position: relative; z-index: 60; display: flex; justify-content: space-between; gap: 24px; flex-wrap: wrap;
+  padding: 44px var(--lp-gutter); background: #0f1513; color: #e9ecea;
+}
+.lp-footer > div { display: grid; gap: 8px; max-width: 34rem; }
+
+/* ---------- motion: content lifts in once it comes into view ---------- */
+.lp-motion .lp-reveal { opacity: 0; transform: translateY(28px); transition: opacity 0.9s ease, transform 1s cubic-bezier(0.2, 0.7, 0.2, 1); }
+.lp-motion .lp-reveal.is-in { opacity: 1; transform: none; }
+.lp-motion .lp-cards .lp-reveal:nth-child(2) { transition-delay: 0.08s; }
+.lp-motion .lp-cards .lp-reveal:nth-child(3) { transition-delay: 0.16s; }
+.lp-motion .lp-cards .lp-reveal:nth-child(4) { transition-delay: 0.24s; }
+@media (prefers-reduced-motion: reduce) {
+  .lp-stack > .lp-panel { transform: none; }
+  .lp-stack > .lp-panel::after { opacity: 0; }
+  .lp-pill:hover { transform: none; }
+}
+
+/* ---------- smaller screens ---------- */
+@media (max-width: 900px) {
+  .lp-nav { grid-template-columns: 1fr auto; padding-top: 18px; }
+  .lp-links { display: none; }
+  .lp-about { grid-template-columns: 1fr; }
+  .lp-cards { grid-template-columns: 1fr; }
+  .lp-hero-text { left: var(--lp-gutter); }
+}
+@media (max-width: 600px) {
+  .lp { --lp-radius: 20px; }
+  .lp-edge { display: none; }
+  .lp-lang { display: none; }
+  .lp-logo { font-size: 0.9rem; letter-spacing: 0.22em; }
+  .lp-feature-text { margin-right: var(--lp-gutter); }
+  .lp-card { aspect-ratio: auto; min-height: 260px; }
+}
+
+/* photo panels: the photo is shown clear, with no tint over it (the text block carries its own soft shadow) */
+.lp-feature .lp-shade, .lp-closing .lp-shade { background: none; }

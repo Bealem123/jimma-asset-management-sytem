@@ -1,0 +1,36 @@
+{
+  "name": "jimma-ams-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Jimma City Asset Management System - API",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "migrate": "node src/scripts/migrate.js",
+    "seed:master": "node src/scripts/seedMaster.js",
+    "create-admin": "node src/scripts/createAdmin.js",
+    "provision-admins": "node src/scripts/provisionAdmins.js",
+    "backup": "node src/scripts/backup.js",
+    "restore": "node src/scripts/restore.js",
+    "test": "node --test --test-concurrency=1 \"test/**/*.test.js\""
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "csv-parse": "^7.0.3",
+    "dotenv": "^18.0.5",
+    "express": "^5.2.1",
+    "helmet": "^8.3.0",
+    "jsonwebtoken": "^9.0.3",
+    "knex": "^3.3.0",
+    "multer": "^2.4.0",
+    "mysql2": "^3.24.5",
+    "nodemailer": "^10.0.16",
+    "qrcode": "^1.5.4",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "supertest": "^7.3.1"
+  }
+}
