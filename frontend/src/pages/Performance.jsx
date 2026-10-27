@@ -1,24 +1,31 @@
-import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api.js';
 import { compactEtb, date, num } from '../format.js';
-import { Alert, Loading, PageHeader, useAsync } from '../components/ui.jsx';
+import {
+  Alert, FilterBar, FilterSearch, FilterSelect, Loading, PageHeader, useAsync, useFilters,
+} from '../components/ui.jsx';
 import { t } from '../i18n.jsx';
 
 // How each Kifle Ketema and Kebele is doing: what is registered and active, what waits at which level and for how
 // long, and what is at risk, with the administrator who answers for it. The server limits the rows to the user's area.
 
-const WAIT_WARN = 7;
-const WAIT_BAD = 14;
+export const WAIT_WARN = 7;
+export const WAIT_BAD = 14;
 
 const Count = ({ n, tone }) => (n > 0 && tone ? <span className={`badge badge-${tone}`}>{num(n)}</span> : num(n));
 
-function Admin({ admin }) {
-  if (!admin) return <span className="badge badge-bad">{t('No administrator')}</span>;
+function Admin({ admins }) {
+  if (!admins.length) return <span className="badge badge-bad">{t('No administrator')}</span>;
   return (
     <>
-      {admin.full_name}
-      <div className="muted small">{admin.last_login_at ? t('Last sign-in {d}', { d: date(admin.last_login_at) }) : t('Never signed in')}</div>
+      {/* one administrator per area: a second active account is a mistake to correct on the Users page */}
+      {admins.length > 1 && <span className="badge badge-warn">{t('{n} administrators: only one allowed', { n: num(admins.length) })}</span>}
+      {admins.map((a) => (
+        <div key={a.username}>
+          {a.full_name} {admins.length > 1 && <span className="muted small">({a.username})</span>}
+          <div className="muted small">{a.last_login_at ? t('Last sign-in {d}', { d: date(a.last_login_at) }) : t('Never signed in')}</div>
+        </div>
+      ))}
     </>
   );
 }
@@ -62,7 +69,7 @@ export function AreaTable({ rows, kind, money }) {
                   )}
                   {kind === 'kebele' && <div className="muted small">{t(r.kifle_ketema_name)}</div>}
                 </td>
-                <td><Admin admin={r.admin} /></td>
+                <td><Admin admins={r.admins || (r.admin ? [r.admin] : [])} /></td>
                 <td className="num">{num(r.assets)}</td>
                 <td className="num">{num(r.active)}{r.assets > 0 && <div className="muted small">{Math.round((r.active / r.assets) * 100)}%</div>}</td>
                 <td className="num"><Count n={r.with_kebele} tone="neutral" /></td>
@@ -85,26 +92,70 @@ export function AreaTable({ rows, kind, money }) {
   );
 }
 
+// "Show" filter: the areas that need someone's attention, and why
+const ATTENTION = {
+  waiting: (r) => r.oldest_wait_days != null && r.oldest_wait_days >= WAIT_WARN,
+  pending: (r) => r.with_kebele + r.with_kifle + r.pending_requests > 0,
+  poor: (r) => r.poor > 0,
+  lost: (r) => r.lost > 0,
+  idle: (r) => r.idle > 0,
+  discrepancies: (r) => r.open_discrepancies > 0,
+  admin: (r) => (r.admins || (r.admin ? [r.admin] : [])).length !== 1,
+  empty: (r) => r.assets === 0,
+};
+const showOptions = () => [ // built at render, so the labels follow the chosen language
+  { value: '', label: 'All areas' },
+  { value: 'waiting', label: t('Waiting over {n} days', { n: WAIT_WARN }) },
+  { value: 'pending', label: 'Something waiting for a decision' },
+  { value: 'poor', label: 'Assets in poor or critical condition' },
+  { value: 'lost', label: 'Assets missing' },
+  { value: 'idle', label: 'Idle assets' },
+  { value: 'discrepancies', label: 'Open discrepancies' },
+  { value: 'admin', label: 'No administrator, or more than one' },
+  { value: 'empty', label: 'Nothing registered yet' },
+];
+
+function areaFilter(f) {
+  const needle = f.q.trim().toLowerCase();
+  return (r) => (!f.show || ATTENTION[f.show](r))
+    && (!needle || [r.name, t(r.name), r.kifle_ketema_name, ...(r.admins || []).map((a) => a.full_name)]
+      .some((s) => s && String(s).toLowerCase().includes(needle)));
+}
+
 export const WaitNote = () => (
   <p className="muted small">
-    {t('Waiting times count from the last change to a registration, or from the day a request was made. Over {a} days is marked amber, over {b} days red.', { a: WAIT_WARN, b: WAIT_BAD })}
+    {t('Waiting times count from the day a registration reached its current step, or from the day a request was made. Over {a} days is marked amber, over {b} days red.', { a: WAIT_WARN, b: WAIT_BAD })}
   </p>
 );
 
 export default function Performance() {
   const { data, error, loading } = useAsync(() => api.get('/dashboard/performance'), []);
-  const [kifle, setKifle] = useState('');
+  const [f, setF, clear, any] = useFilters(['q', 'kifle', 'show']);
   if (loading) return <Loading />;
   if (error) return <Alert>{error}</Alert>;
-  const kebeles = kifle ? data.kebeles.filter((b) => String(b.kifle_ketema_id) === kifle) : data.kebeles;
+  const keep = areaFilter(f);
+  const kifles = data.kifle_ketemas.filter((k) => (!f.kifle || String(k.id) === f.kifle) && keep(k));
+  const kebeles = data.kebeles.filter((b) => (!f.kifle || String(b.kifle_ketema_id) === f.kifle) && keep(b));
+  const filters = (
+    <FilterBar any={any} onClear={clear}>
+      <FilterSearch id="pf-q" value={f.q} onChange={(v) => setF('q', v)} placeholder="Area or administrator" />
+      {data.kifle_ketemas.length > 1 && (
+        <FilterSelect id="pf-kif" text="Kifle Ketema" value={f.kifle} onChange={(v) => setF('kifle', v)}
+          options={[{ value: '', label: 'All Kifle Ketemas' }, ...data.kifle_ketemas.map((k) => ({ value: String(k.id), label: k.name }))]} />
+      )}
+      <FilterSelect id="pf-show" text="Show" value={f.show} onChange={(v) => setF('show', v)} options={showOptions()} />
+    </FilterBar>
+  );
+  const none = <p className="muted">{t('Nothing matches these filters.')}</p>;
   // the Mayor holds the Kifle Ketema Administrators to account: the figures stop at Kifle Ketema level
   if (!data.kebele_level) {
     return (
       <>
         <PageHeader title="Performance by area" subtitle="Each Kifle Ketema: what is registered, what is waiting and for how long, and what is at risk. The Kifle Ketema Administrator who answers for it is named; each one follows its own Kebeles." />
+        {filters}
         <section className="card">
           <h2>{t('Kifle Ketemas')}</h2>
-          <AreaTable rows={data.kifle_ketemas} kind="kifle" money={data.can_see_money} />
+          {any && !kifles.length ? none : <AreaTable rows={kifles} kind="kifle" money={data.can_see_money} />}
         </section>
         <WaitNote />
       </>
@@ -113,23 +164,16 @@ export default function Performance() {
   return (
     <>
       <PageHeader title="Performance by area" subtitle="Each Kifle Ketema and Kebele: what is registered, what is waiting and for how long, and what is at risk. The administrator who answers for each area is named." />
+      {filters}
       {data.kifle_ketemas.length > 1 && (
         <section className="card">
           <h2>{t('Kifle Ketemas')}</h2>
-          <AreaTable rows={data.kifle_ketemas} kind="kifle" money={data.can_see_money} />
+          {any && !kifles.length ? none : <AreaTable rows={kifles} kind="kifle" money={data.can_see_money} />}
         </section>
       )}
       <section className="card" style={{ marginTop: 16 }}>
-        <div className="actions" style={{ justifyContent: 'space-between' }}>
-          <h2>{t('Kebeles')}</h2>
-          {data.kifle_ketemas.length > 1 && (
-            <select value={kifle} onChange={(e) => setKifle(e.target.value)} aria-label={t('Kifle Ketema')}>
-              <option value="">{t('All Kifle Ketemas')}</option>
-              {data.kifle_ketemas.map((k) => <option key={k.id} value={String(k.id)}>{t(k.name)}</option>)}
-            </select>
-          )}
-        </div>
-        <AreaTable rows={kebeles} kind="kebele" money={data.can_see_money} />
+        <h2>{t('Kebeles')}</h2>
+        {any && !kebeles.length ? none : <AreaTable rows={kebeles} kind="kebele" money={data.can_see_money} />}
       </section>
       <WaitNote />
     </>

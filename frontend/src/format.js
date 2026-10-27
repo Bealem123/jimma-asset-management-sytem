@@ -18,6 +18,7 @@ const LABELS = {
   TRANSFER_OUT: 'Transfer out',
   OWNERSHIP_CHANGE: 'Ownership change',
   WRONG_LOCATION: 'Wrong location',
+  REPORTED: 'Reported done, to check',
   STRAIGHT_LINE: 'Straight line',
 };
 
@@ -37,14 +38,16 @@ export const compactEtb = (v) => (v == null ? '—' : `${new Intl.NumberFormat('
 export const date = (v) => (v ? String(v).slice(0, 10) : '—');
 export const dateTime = (v) => (v ? String(v).replace('T', ' ').slice(0, 16) : '—');
 export const bytes = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1048576).toFixed(1)} MB`);
-export const today = () => new Date().toISOString().slice(0, 10);
-export const nowLocal = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); };
+/** The local date and time for a datetime-local field, `minutes` from now (e.g. 60 for an end one hour later). */
+export const nowLocal = (minutes = 0) => { const d = new Date(); d.setMinutes(d.getMinutes() + minutes - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); };
+/** Today on this device's calendar (in Jimma the UTC date is still yesterday until 03:00). */
+export const today = () => nowLocal().slice(0, 10);
 
 /** Tone used to colour a status/condition/approval badge. */
 export function tone(value) {
   if (['ACTIVE', 'EXCELLENT', 'GOOD', 'COMPLETED', 'APPROVED', 'PASSED', 'FOUND', 'DONE', 'CORRECTED', 'OK', 'SENT'].includes(value)) return 'good';
   if (['FAIR', 'PLANNED', 'REGISTERED', 'INACTIVE', 'PENDING', 'OPEN', 'DUPLICATE', 'ATTENTION', 'warn'].includes(value)) return 'warn';
-  if (['SUBMITTED', 'REVIEWED', 'IN_PROGRESS', 'UNDER_MAINTENANCE', 'INVESTIGATING'].includes(value)) return 'info';
+  if (['SUBMITTED', 'REVIEWED', 'IN_PROGRESS', 'UNDER_MAINTENANCE', 'INVESTIGATING', 'REPORTED'].includes(value)) return 'info';
   if (['POOR', 'CRITICAL', 'DAMAGED', 'LOST', 'CANCELLED', 'REJECTED', 'FAILED', 'MISSING', 'WRONG_LOCATION', 'bad'].includes(value)) return 'bad';
   if (value === 'good') return 'good';
   return 'neutral'; // DRAFT, DISPOSED, RETIRED, TRANSFERRED, LEASED, RENTED, DISMISSED ...

@@ -42,6 +42,11 @@ export const fromEthiopian = (year, month, day) => jdnToIso(ethiopianToJdn(year,
 
 export const addDays = (iso, n) => jdnToIso(isoToJdn(iso) + n);
 export const todayIso = (now = new Date()) => now.toISOString().slice(0, 10);
+/**
+ * A date that has already come, e.g. when money was received. todayIso is the UTC day, which in Jimma (UTC+3) is
+ * still yesterday until 03:00, so the local today is allowed by allowing one day more.
+ */
+export const notAfterToday = (iso, now = new Date()) => iso <= addDays(todayIso(now), 1);
 
 // ---------------------------------------------------------------------------------------------- reporting periods
 

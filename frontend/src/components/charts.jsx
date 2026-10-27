@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { num } from '../format.js';
-import { t } from '../i18n.jsx';
+import { getLanguage, t } from '../i18n.jsx';
+import { GC_MONTHS } from '../calendar.js';
 import NavIcon from './NavIcon.jsx';
 
 // Charts drawn as plain SVG. Common rules: thin marks, 4px rounded data ends on a single baseline, hairline solid
@@ -12,7 +13,11 @@ import NavIcon from './NavIcon.jsx';
 const pct = (part, whole) => (whole ? Math.round((part / whole) * 100) : 0);
 
 /** 'YYYY-MM' -> short month name ("Oct"). */
-export const monthLabel = (m) => new Date(`${m}-01T00:00:00`).toLocaleString('en', { month: 'short' });
+/** A month on a chart axis ('2026-10'): the short English name, or the month's name in the chosen language. */
+export const monthLabel = (m) => {
+  const name = GC_MONTHS[Number(String(m).slice(5, 7)) - 1];
+  return getLanguage() === 'en' ? name.slice(0, 3) : t(name);
+};
 
 /** A clean axis maximum (1, 2, 2.5, 5 x 10^n) at or above the largest value. */
 function niceMax(v) {
@@ -301,14 +306,16 @@ export function Sparkline({ values }) {
 /**
  * A key figure. `feature` makes it the dashboard's headline card (filled, with the figure in yellow); `icon` adds a
  * small icon (a NavIcon name); `spark` adds a trend line from a list of numbers. Each card is tinted with a series
- * colour chosen by its topic (its icon), so the same topic wears the same colour on every dashboard; `hue` overrides.
+ * colour chosen by its topic (its icon), so the same topic wears the same colour on every dashboard; `hue` overrides
+ * (`hue={0}` leaves the card plain).
  */
 const TILE_HUE = {
   assets: 1, verification: 1, wrench: 2, map: 3, audit: 3, logout: 4, register: 4, coin: 4, pause: 4,
   search: 5, approvals: 6, performance: 6, import: 7, reports: 7, followups: 7, alert: 8,
 };
 
-export function Tile({ value, caption, note, to, tone, feature, icon, spark, hue }) {
+/** `plain` keeps the card white and gives only its icon the topic's colour. */
+export function Tile({ value, caption, note, to, tone, feature, icon, spark, hue, plain }) {
   const h = hue ?? TILE_HUE[icon] ?? (feature ? 1 : undefined);
   const body = (
     <>
@@ -323,7 +330,7 @@ export function Tile({ value, caption, note, to, tone, feature, icon, spark, hue
       {note && <div className="note">{t(note)}</div>}
     </>
   );
-  const cls = `tile${feature ? ' tile-feature' : ''}${tone ? ` tile-${tone}` : ''}${icon ? ' tile-has-icon' : ''}${h ? ' tile-hued' : ''}`;
+  const cls = `tile${feature ? ' tile-feature' : ''}${tone ? ` tile-${tone}` : ''}${icon ? ' tile-has-icon' : ''}${h ? (plain ? ' tile-icon-hued' : ' tile-hued') : ''}`;
   const style = h ? { '--tile': `var(--series-${h})` } : undefined;
   return to ? <Link to={to} className={cls} style={{ textDecoration: 'none', ...style }}>{body}</Link> : <div className={cls} style={style}>{body}</div>;
 }

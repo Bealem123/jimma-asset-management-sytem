@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { db } from '../db.js';
 import { config } from '../config.js';
-import { notFound } from '../middleware/errors.js';
-import { assetByToken, publicCard } from '../lib/publicAsset.js';
+import { HttpError, notFound } from '../middleware/errors.js';
+import { assetByToken, publicCard, retiredLabel } from '../lib/publicAsset.js';
 
 // No sign-in: what a printed QR code opens on any phone. Only the asset behind a (random) token, and only what is
 // safe to show anyone (see lib/publicAsset.js).
@@ -12,6 +12,7 @@ const router = Router();
 
 router.get('/assets/:token', async (req, res) => {
   const card = await publicCard(req.params.token);
+  if (!card && await retiredLabel(req.params.token)) throw new HttpError(410, 'This label has been cancelled: the asset now carries a new label.');
   if (!card) throw notFound('No asset matches this label.');
   res.set('Cache-Control', 'no-store');
   res.json(card);

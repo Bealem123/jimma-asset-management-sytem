@@ -24,14 +24,14 @@ function Health() {
       </div>
       {h.warnings.map((w) => <Alert key={w} kind="warn">{w}</Alert>)}
       <div className="grid grid-tiles">
-        <Tile value={`${h.database.latency_ms} ms`} caption="Database" note={h.database.ok ? 'Connected' : 'Not reachable'} />
-        <Tile value={num(h.counts.assets)} caption="Assets" note={`${h.counts.active_users} active users`} />
-        <Tile value={num(h.counts.open_requests)} caption="Requests waiting" />
-        <Tile value={bytes(h.uploads.bytes)} caption="Uploaded files" note={`${num(h.uploads.files)} files`} />
-        <Tile value={hours(h.backups.database_age_hours)} caption="Last database backup" note={h.backups.database ? h.backups.database.filename : 'Run one in the Backups tab'} />
-        <Tile value={hours(h.backups.files_age_hours)} caption="Last files backup" />
-        <Tile value={`${Math.floor(h.server.uptime_seconds / 3600)} h`} caption="Server running for" note={`${h.server.memory_mb} MB memory · Node ${h.server.node}`} />
-        <Tile value={h.channels.email ? t('On') : t('Off')} caption="E-mail sending" note={h.channels.sms ? t('SMS gateway on') : t('SMS gateway off')} />
+        <Tile hue={1} value={`${h.database.latency_ms} ms`} caption="Database" note={h.database.ok ? 'Connected' : 'Not reachable'} />
+        <Tile hue={3} value={num(h.counts.assets)} caption="Assets" note={`${h.counts.active_users} active users`} />
+        <Tile hue={6} value={num(h.counts.open_requests)} caption="Requests waiting" />
+        <Tile hue={7} value={bytes(h.uploads.bytes)} caption="Uploaded files" note={`${num(h.uploads.files)} files`} />
+        <Tile hue={4} value={hours(h.backups.database_age_hours)} caption="Last database backup" note={h.backups.database ? h.backups.database.filename : 'Run one in the Backups tab'} />
+        <Tile hue={5} value={hours(h.backups.files_age_hours)} caption="Last files backup" />
+        <Tile hue={2} value={`${Math.floor(h.server.uptime_seconds / 3600)} h`} caption="Server running for" note={`${h.server.memory_mb} MB memory · Node ${h.server.node}`} />
+        <Tile hue={1} value={h.channels.email ? t('On') : t('Off')} caption="E-mail sending" note={h.channels.sms ? t('SMS gateway on') : t('SMS gateway off')} />
       </div>
     </>
   );
@@ -55,7 +55,7 @@ function Workflows() {
   }
   return (
     <>
-      <p className="muted">{t('Choose which changes need someone else\'s approval. With two steps, one person reviews and a different person gives the final approval. Asset registration always uses its full workflow (draft, submitted, reviewed, approved, active).')}</p>
+      <p className="muted" style={{ marginBottom: 16 }}>{t('Choose which changes need someone else\'s approval. With two steps, one person reviews and a different person gives the final approval. Asset registration always uses its full workflow (draft, submitted, reviewed, approved, active).')}</p>
       <Alert kind="success">{flash}</Alert>
       <Alert>{err}</Alert>
       <Table head={['Request', 'Needs approval', 'Steps']}>
@@ -103,7 +103,7 @@ function Permissions() {
 
   return (
     <>
-      <p className="muted">{t('A role\'s permissions say what its members may')}{' '}<em>{t('do')}</em>{t('; the area assigned to each user says which assets they can')}{' '}<em>{t('see')}</em>{t('. The Super Administrator always keeps every permission.')}</p>
+      <p className="muted" style={{ marginBottom: 16 }}>{t('A role\'s permissions say what its members may')}{' '}<em>{t('do')}</em>{t('; the area assigned to each user says which assets they can')}{' '}<em>{t('see')}</em>{t('. The Super Administrator always keeps every permission.')}</p>
       <div className="field" style={{ maxWidth: 320, marginBottom: 12 }}>
         <label htmlFor="perm-role">{t('Role')}</label>
         <select id="perm-role" value={role} onChange={(e) => { setRole(e.target.value); setDraft(null); setFlash(''); }}>
@@ -163,7 +163,7 @@ function NotificationRules() {
   }
   return (
     <>
-      <p className="muted">{t('In-system notifications are always shown to the people responsible for the asset. E-mail and SMS are optional extras and need an e-mail address or phone number on the user. The scan runs every hour; you can also run it now.')}</p>
+      <p className="muted" style={{ marginBottom: 16 }}>{t('In-system notifications are always shown to the people responsible for the asset. E-mail and SMS are optional extras and need an e-mail address or phone number on the user. The scan runs every hour; you can also run it now.')}</p>
       {!data.channels.email && <Alert kind="warn">{t('E-mail is not set up on the server (SMTP_HOST in the settings file), so e-mail ticks have no effect yet.')}</Alert>}
       {!data.channels.sms && <Alert kind="warn">{t('No SMS gateway is set up (SMS_GATEWAY_URL), so SMS ticks have no effect yet.')}</Alert>}
       <Alert kind="success">{flash}</Alert>
@@ -195,7 +195,7 @@ function Settings() {
   if (error) return <Alert>{error}</Alert>;
   return (
     <section className="card">
-      <p className="muted">{t('The texts are shown on printed and PDF reports. The calendar decides which months the monthly reports follow; both calendars are always shown.')}</p>
+      <p className="muted" style={{ marginBottom: 16 }}>{t('The texts are shown on printed and PDF reports. The calendar decides which months the monthly reports follow; both calendars are always shown.')}</p>
       <Alert kind="success">{flash}</Alert>
       <SpecForm
         submitLabel="Save settings" initial={data.values}
@@ -224,11 +224,11 @@ function Backups() {
   }
   async function verify(b) {
     setErr('');
-    try { const r = await api.post(`/admin/backups/${b.id}/verify`); setFlash(`${b.filename}: ${r.status === 'OK' ? 'reads back correctly' : 'DAMAGED'}.`); reload(); } catch (e) { setErr(e.message); }
+    try { const r = await api.post(`/admin/backups/${b.id}/verify`); setFlash(t(r.status === 'OK' ? '{file}: it reads back correctly.' : '{file}: DAMAGED.', { file: b.filename })); reload(); } catch (e) { setErr(e.message); }
   }
   return (
     <>
-      <p className="muted">{t('A backup has two parts: the database (all records and history) and the uploaded files (photos and documents). Copy the backup folder to another disk or site regularly: a backup on the same machine does not protect against losing the machine. Backups folder:')}{' '}<code>{data.dir}</code></p>
+      <p className="muted" style={{ marginBottom: 16 }}>{t('A backup has two parts: the database (all records and history) and the uploaded files (photos and documents). Copy the backup folder to another disk or site regularly: a backup on the same machine does not protect against losing the machine. Backups folder:')}{' '}<code>{data.dir}</code></p>
       <Alert kind="success">{flash}</Alert>
       <Alert>{err}</Alert>
       <div className="actions" style={{ marginBottom: 12 }}>
@@ -274,7 +274,7 @@ function ApiKeys() {
   }
   return (
     <>
-      <p className="muted">{t('Other City systems (GIS, finance, procurement, dashboards) can read the asset register through a read-only REST API. Each system gets its own key. Money figures are never included. Interface description:')}{' '}<a href="/api/integration/v1/openapi.json" target="_blank" rel="noreferrer">{t('/api/integration/v1/openapi.json')}</a>{t('. Send the key in the')}{' '}<code>{t('X-API-Key')}</code>{' '}{t('header.')}</p>
+      <p className="muted" style={{ marginBottom: 16 }}>{t('Other City systems (GIS, finance, procurement, dashboards) can read the asset register through a read-only REST API. Each system gets its own key. Money figures are never included. Interface description:')}{' '}<a href="/api/integration/v1/openapi.json" target="_blank" rel="noreferrer">{t('/api/integration/v1/openapi.json')}</a>{t('. Send the key in the')}{' '}<code>{t('X-API-Key')}</code>{' '}{t('header.')}</p>
       <Alert>{err}</Alert>
       {created && (
         <Alert kind="warn">{t('Key for')}{' '}<strong>{created.name}</strong>{' '}{t('(copy it now, it cannot be shown again):')}<br />
@@ -295,7 +295,7 @@ function ApiKeys() {
         <Modal title="Create an API key" onClose={() => setModal(false)}>
           <SpecForm
             submitLabel="Create" onCancel={() => setModal(false)}
-            fields={[{ name: 'name', label: 'Which system will use it?', required: true, wide: true, placeholder: 'e.g. City GIS server' }]}
+            fields={[{ name: 'name', label: 'Which system will use it?', required: true, wide: true, maxLength: 120, placeholder: 'e.g. City GIS server' }]}
             onSubmit={async (v) => { setCreated(await api.post('/admin/api-keys', v)); setModal(false); reload(); }}
           />
         </Modal>

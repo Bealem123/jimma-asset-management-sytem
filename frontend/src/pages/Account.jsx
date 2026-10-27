@@ -5,6 +5,7 @@ import { can } from '../permissions.js';
 import { label } from '../format.js';
 import { areaOf } from '../area.js';
 import { Alert, PageHeader, SpecForm } from '../components/ui.jsx';
+import { validatePassword } from '../validation.js';
 import { useLookups } from '../lookups.jsx';
 import { t } from '../i18n.jsx';
 import { PhotoPicker } from '../components/Avatar.jsx';
@@ -49,7 +50,7 @@ export default function Account() {
             }}
             fields={[
               { name: 'current_password', label: 'Current password', type: 'password', required: true, autoComplete: 'current-password', wide: true },
-              { name: 'new_password', label: 'New password', type: 'password', required: true, autoComplete: 'new-password', help: 'At least 10 characters.', wide: true },
+              { name: 'new_password', label: 'New password', type: 'password', required: true, autoComplete: 'new-password', help: 'At least 8 characters, with upper- and lower-case letters, a number and a symbol.', wide: true, validate: (v) => validatePassword(v, { label: 'New password' }) },
             ]}
           />
         </section>

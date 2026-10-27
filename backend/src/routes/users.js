@@ -1,33 +1,46 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
+import { BCRYPT_ROUNDS, tempPasswordExpiry } from '../lib/security.js';
 import { z } from 'zod';
 import { db } from '../db.js';
 import { authenticate } from '../middleware/auth.js';
 import { HttpError, conflict, forbidden, notFound, parse } from '../middleware/errors.js';
-import { has, managedAccountRole, managedAccountRoles } from '../lib/permissions.js';
+import { managedAccountRole, managedAccountRoles } from '../lib/permissions.js';
 import { logAudit } from '../lib/audit.js';
-import { ROLES, ROLE_LABELS } from '../lib/constants.js';
-import { bool, idRef, oneOf, optIdRef, optStr, present, reqStr } from '../lib/schemas.js';
+import { ROLES, ROLE_LABELS, SYSTEM_ROLES } from '../lib/constants.js';
+import {
+  bool, idRef, oneOf, optEmail, optIdRef, optPersonName, optPhone, optStr, passwordSchema,
+  present, usernameSchema,
+} from '../lib/schemas.js';
 import { photoUpload, photoVersion, removePhoto, savePhoto } from '../lib/photos.js';
+import { sendAccountCreationAlert } from '../lib/accountNotification.js';
 
 // Hierarchy: Super Administrator -> Kifle Ketema Administrator -> Kebele Administrator -> Sector Administrator.
-// Each level creates and manages only the level directly below it (see managedAccountRole), inside its own area,
-// and can see (not change) the accounts further down.
+// Each level creates, manages and sees only the level directly below it (see managedAccountRole), inside its own
+// area. The Internal Auditor sees every account, and its history, read-only: who holds which role is part of what it
+// checks.
 const router = Router();
+const auditsAccounts = (user) => user.role === ROLES.AUDITOR;
 router.use(authenticate, (req, res, next) => {
   if (managedAccountRole(req.user)) return next();
+  if (req.method === 'GET' && auditsAccounts(req.user)) return next();
   throw forbidden('You cannot manage user accounts.');
 });
 
 const idList = z.array(idRef).max(200).default([]);
+// A person is registered by name and father's name (and, if given, grandfather's name): the full name shown
+// everywhere is these joined. The username is made from the name unless one is given (scripts, older clients).
 const userSchema = z.object({
-  username: z.string().trim().min(3, 'At least 3 characters.').max(80).regex(/^[A-Za-z0-9._-]+$/, 'Letters, numbers, dot, dash and underscore only.'),
-  full_name: reqStr(160, 'Full name'),
-  password: z.string().min(10, 'Use at least 10 characters.').max(100),
-  role: oneOf(Object.values(ROLES), 'Role'),
+  username: usernameSchema.optional(),
+  first_name: optPersonName(80, 'Name'),
+  father_name: optPersonName(80, "Father's name"),
+  grandfather_name: optPersonName(80, "Grandfather's name"),
+  full_name: optPersonName(160, 'Full name'),
+  password: passwordSchema,
+  role: oneOf(SYSTEM_ROLES, 'Role'),
   is_active: bool.default(true),
-  email: z.preprocess((v) => (v === '' ? null : v), z.string().trim().email('Enter a valid e-mail address.').max(190).nullable()).default(null),
-  phone: optStr(40),
+  email: optEmail,
+  phone: optPhone,
   department_id: optIdRef,
   kifle_ketema_ids: idList,
   kebele_ids: idList,
@@ -53,7 +66,45 @@ async function withScope(users) {
 }
 
 const listUsers = (where = {}) => db('users').where(where)
-  .select('id', 'username', 'full_name', 'role', 'is_active', 'email', 'phone', 'department_id', 'must_change_password', 'last_login_at', 'created_at', 'photo_name').orderBy('username');
+  .select('id', 'username', 'full_name', 'first_name', 'father_name', 'grandfather_name', 'role', 'is_active', 'email', 'phone', 'department_id',
+    'must_change_password', 'last_login_at', 'created_at', 'photo_name').orderBy('username');
+
+// ---------------------------------------------------------------- the person's name and username
+
+const NAME_PARTS = ['first_name', 'father_name', 'grandfather_name'];
+const splitName = (full) => {
+  const [first = null, father = null, ...rest] = String(full || '').trim().split(/\s+/).filter(Boolean);
+  return { first_name: first, father_name: father, grandfather_name: rest.join(' ') || null };
+};
+
+/**
+ * Settles the name in `d` (a new account, or the changes to `existing`): given as parts, the full name is made from
+ * them; given as a full name only, it is split into parts. Then both the person's own name and the father's name
+ * must be there. Returns whether the name changed.
+ */
+function settleName(d, existing = null) {
+  // a change names only the parts it sends (an emptied one included); a new account fills in at least one
+  const partsGiven = existing ? NAME_PARTS.some((k) => k in d) : NAME_PARTS.some((k) => d[k] != null);
+  if (!partsGiven && d.full_name == null) return false;
+  const parts = partsGiven
+    ? Object.fromEntries(NAME_PARTS.map((k) => [k, d[k] !== undefined ? d[k] : existing?.[k] ?? null]))
+    : splitName(d.full_name);
+  if (!parts.first_name) throw fail('first_name', 'Name is required.');
+  if (!parts.father_name) throw fail('father_name', "Father's name is required: register the person with their name and their father's name.");
+  Object.assign(d, parts, { full_name: [parts.first_name, parts.father_name, parts.grandfather_name].filter(Boolean).join(' ') });
+  return true;
+}
+
+const usernameTaken = (name) => db('users').whereRaw('LOWER(username) = ?', [name.toLowerCase()]).first();
+const slug = (s) => String(s).toLowerCase().replace(/['’`]/g, '').replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '');
+
+/** The username: the person's first name; if someone has it already, first name and father's name, then a number. */
+async function freeUsername({ first_name: first, father_name: father }) {
+  const own = slug(first).slice(0, 40);
+  const both = `${own}.${slug(father)}`.slice(0, 76);
+  for (const candidate of [...(own.length >= 3 ? [own] : []), both]) if (!(await usernameTaken(candidate))) return candidate;
+  for (let i = 2; ; i += 1) if (!(await usernameTaken(`${both}${i}`))) return `${both}${i}`;
+}
 
 async function setScope(trx, userId, d) {
   const tables = [
@@ -80,20 +131,14 @@ const myKebeleIds = (user) => {
 
 const inside = (ids, allowed) => ids.length > 0 && ids.every((id) => allowed.includes(id));
 
-/** A Kifle Ketema Administrator follows (sees, does not change) the Inspectors working in its Kifle Ketema. */
-const followsInspector = (req, u) => u.role === ROLES.INSPECTOR && req.user.role === ROLES.KIFLE_ADMIN && has(req.user, 'inspection.oversee')
-  && u.kifle_ketema_ids.some((id) => req.user.scope.kifle.includes(id));
-
-/**
- * Accounts a user can see: the Super Administrator all; a Kifle Ketema Administrator the Kebele and Sector Administrators
- * of its Kebeles and the Inspectors of its Kifle Ketema; a Kebele Administrator the Sector Administrators of its Kebele.
- */
-const visibleTo = (req, u, mine) => {
-  if (isSuper(req) || followsInspector(req, u)) return true;
-  const roles = req.user.role === ROLES.KIFLE_ADMIN ? [ROLES.KEBELE_ADMIN, ROLES.SECTOR_ADMIN] : [ROLES.SECTOR_ADMIN];
-  return roles.includes(u.role) && inside(u.kebele_ids, mine);
-};
 const manageableBy = (req, u, mine) => managedAccountRoles(req.user).includes(u.role) && (isSuper(req) || inside(u.kebele_ids, mine));
+/**
+ * Accounts a user can see are the accounts it creates: the Super Administrator the Kifle Ketema Administrators, the
+ * Mayor / Executive and the specialists; a Kifle Ketema Administrator the Kebele Administrators of its Kebeles; a
+ * Kebele Administrator the Sector Administrators of its Kebele (made by it or by whoever held its post before).
+ * The Internal Auditor alone sees every account, read-only.
+ */
+const visibleTo = (req, u, mine) => auditsAccounts(req.user) || manageableBy(req, u, mine);
 
 async function loadManaged(req, id) {
   const [user] = await withScope(await listUsers({ id }));
@@ -108,7 +153,9 @@ async function checkDelegated(req, d, existing = null) {
   const targets = managedAccountRoles(req.user);
   const target = d.role ?? existing?.role;
   if (existing?.readOnly) throw forbidden('You can see this account but you cannot change it.');
-  if (d.role && !targets.includes(d.role)) throw forbidden(`You can only create ${targets.map((r) => ROLE_LABELS[r]).join(' or ')} accounts.`);
+  if (d.role && SYSTEM_ROLES.includes(d.role) && !targets.includes(d.role)) {
+    throw forbidden(`You can only create ${targets.map((r) => ROLE_LABELS[r]).join(' or ')} accounts.`);
+  }
   if (target === ROLES.EXECUTIVE || target === ROLES.AUDITOR) {
     // the Mayor / Executive and the Internal Auditor see the whole City by role: no assigned area, no office
     Object.assign(d, { kifle_ketema_ids: [], kebele_ids: [], sector_ids: [], department_id: null });
@@ -132,13 +179,14 @@ const fail = (field, message) => new HttpError(400, 'Please correct the highligh
 
 /**
  * The hierarchy has exactly one administrator per area: one Kifle Ketema Administrator per Kifle Ketema,
- * one Kebele Administrator per Kebele and one Sector Administrator per Sector in a Kebele. The City has one active
- * Mayor / Executive and one active Internal Auditor.
+ * one Kebele Administrator per Kebele and one Sector Administrator per Sector in a Kebele. Each Kifle Ketema also has
+ * one Financial Officer and one Inspector. The City has one active Mayor / Executive and one active Internal Auditor.
  */
+const ONE_PER_KIFLE_KETEMA = [ROLES.KIFLE_ADMIN, ROLES.FINANCIAL_OFFICER, ROLES.INSPECTOR];
+
 async function checkHierarchy(role, scope, isActive, exceptId = null) {
   const { kifle_ketema_ids: kifle = [], kebele_ids: kebeles = [], sector_ids: sectors = [] } = scope;
-  if (role === ROLES.KIFLE_ADMIN && kifle.length !== 1) throw fail('kifle_ketema_ids', 'Choose exactly one Kifle Ketema.');
-  if ((role === ROLES.FINANCIAL_OFFICER || role === ROLES.INSPECTOR) && !kifle.length) throw fail('kifle_ketema_ids', 'Choose at least one Kifle Ketema.');
+  if (ONE_PER_KIFLE_KETEMA.includes(role) && kifle.length !== 1) throw fail('kifle_ketema_ids', 'Choose exactly one Kifle Ketema.');
   if (role === ROLES.KEBELE_ADMIN && kebeles.length !== 1) throw fail('kebele_ids', 'Choose exactly one Kebele.');
   if (role === ROLES.SECTOR_ADMIN) {
     if (kebeles.length !== 1) throw fail('kebele_ids', 'Choose exactly one Kebele.');
@@ -155,7 +203,7 @@ async function checkHierarchy(role, scope, isActive, exceptId = null) {
     // ... and one Internal Auditor, who sees the whole City
     const auditor = await others().first('users.username');
     if (auditor) throw conflict(`The City already has an Internal Auditor: ${auditor.username}. Deactivate that account first.`);
-  } else if (role === ROLES.KIFLE_ADMIN) {
+  } else if (ONE_PER_KIFLE_KETEMA.includes(role)) {
     clash = await others().join('user_kifle_ketemas as x', 'x.user_id', 'users.id').whereIn('x.kifle_ketema_id', kifle).first('users.username');
   } else if (role === ROLES.KEBELE_ADMIN) {
     clash = await others().join('user_kebeles as x', 'x.user_id', 'users.id').whereIn('x.kebele_id', kebeles).first('users.username');
@@ -165,6 +213,31 @@ async function checkHierarchy(role, scope, isActive, exceptId = null) {
       .whereIn('x.kebele_id', kebeles).whereIn('y.sector_id', sectors).first('users.username');
   }
   if (clash) throw conflict(`This area already has a ${ROLE_LABELS[role]}: ${clash.username}. Deactivate or change that account first.`);
+}
+
+// ---------------------------------------------------------------- unique identifiers
+async function checkUniqueIdentifiers(d, exceptId = null) {
+  if (d.username) {
+    const q = db('users').whereRaw('LOWER(username) = ?', [d.username.toLowerCase()]);
+    if (exceptId) q.whereNot('id', exceptId);
+    if (await q.first()) {
+      throw conflict(`An account with the username "${d.username}" already exists.`);
+    }
+  }
+  if (d.email) {
+    const q = db('users').whereRaw('LOWER(email) = ?', [d.email.toLowerCase()]);
+    if (exceptId) q.whereNot('id', exceptId);
+    if (await q.first()) {
+      throw conflict(`An account with the email address "${d.email}" already exists.`);
+    }
+  }
+  if (d.phone) {
+    const q = db('users').where('phone', d.phone);
+    if (exceptId) q.whereNot('id', exceptId);
+    if (await q.first()) {
+      throw conflict(`An account with the phone number "${d.phone}" already exists.`);
+    }
+  }
 }
 
 // ---------------------------------------------------------------- routes
@@ -178,11 +251,15 @@ router.get('/', async (req, res) => {
 router.post('/', async (req, res) => {
   const d = parse(userSchema, req.body);
   await checkDelegated(req, d);
+  await checkUniqueIdentifiers(d);
   await checkHierarchy(d.role, d, d.is_active);
+  if (!settleName(d)) throw fail('first_name', 'Name is required.');
+  if (!d.username) d.username = await freeUsername(d);
   const id = await db.transaction(async (trx) => {
     const [newId] = await trx('users').insert({
-      username: d.username, full_name: d.full_name, role: d.role, is_active: d.is_active, email: d.email, phone: d.phone, department_id: d.department_id,
-      password_hash: await bcrypt.hash(d.password, 10), must_change_password: true,
+      username: d.username, full_name: d.full_name, first_name: d.first_name, father_name: d.father_name, grandfather_name: d.grandfather_name,
+      role: d.role, is_active: d.is_active, email: d.email, phone: d.phone, department_id: d.department_id,
+      password_hash: await bcrypt.hash(d.password, BCRYPT_ROUNDS), must_change_password: true, temp_password_expires_at: tempPasswordExpiry(),
     });
     await setScope(trx, newId, d);
     await logAudit(trx, req.user, {
@@ -191,7 +268,28 @@ router.post('/', async (req, res) => {
     });
     return newId;
   });
-  res.status(201).json((await withScope(await listUsers({ id })))[0]);
+  const createdUser = (await withScope(await listUsers({ id })))[0];
+
+  // Resolve human-readable area name for notification content
+  let areaName = '';
+  try {
+    if (d.kifle_ketema_ids?.length) {
+      const names = await db('kifle_ketemas').whereIn('id', d.kifle_ketema_ids).pluck('name');
+      areaName = names.join(', ') + ' Kifle Ketema';
+    } else if (d.kebele_ids?.length) {
+      const names = await db('kebeles').whereIn('id', d.kebele_ids).pluck('name');
+      areaName = names.join(', ') + ' Kebele';
+    }
+  } catch (err) { /* secondary */ }
+
+  // Send credentials via SMTP Email and SMS / Messaging for all 8 account types
+  sendAccountCreationAlert({
+    user: createdUser,
+    plainPassword: d.password,
+    areaName,
+  }).catch((err) => console.error('Failed to dispatch account creation alert:', err.message));
+
+  res.status(201).json(createdUser);
 });
 
 router.patch('/:id', async (req, res) => {
@@ -199,6 +297,10 @@ router.patch('/:id', async (req, res) => {
   const d = present(parse(userSchema.partial(), req.body), req.body);
   const { reason } = parse(z.object({ reason: optStr(300) }), { reason: req.body?.reason }); // why an account is switched off or on
   await checkDelegated(req, d, existing);
+  if (d.username || d.email || d.phone) {
+    await checkUniqueIdentifiers(d, existing.id);
+  }
+  settleName(d, existing);
   if (existing.id === req.user.id && (d.is_active === false || (d.role && d.role !== existing.role))) {
     throw conflict('You cannot deactivate your own account or change your own role.');
   }
@@ -215,8 +317,8 @@ router.patch('/:id', async (req, res) => {
   }
   await db.transaction(async (trx) => {
     const update = {};
-    for (const k of ['username', 'full_name', 'role', 'is_active', 'email', 'phone', 'department_id']) if (k in d) update[k] = d[k];
-    if (d.password) { update.password_hash = await bcrypt.hash(d.password, 10); update.must_change_password = true; } // an administrator-set password is temporary
+    for (const k of ['username', 'full_name', ...NAME_PARTS, 'role', 'is_active', 'email', 'phone', 'department_id']) if (k in d) update[k] = d[k];
+    if (d.password) { update.password_hash = await bcrypt.hash(d.password, BCRYPT_ROUNDS); update.must_change_password = true; update.temp_password_expires_at = tempPasswordExpiry(); } // an administrator-set password is temporary
     // a reset password, a new role or a deactivation ends the user's open sessions straight away
     if (d.password || (d.role && d.role !== existing.role) || d.is_active === false) update.token_version = trx.raw('token_version + 1');
     if (Object.keys(update).length) await trx('users').where({ id: existing.id }).update(update);
@@ -243,7 +345,14 @@ router.patch('/:id', async (req, res) => {
       });
     }
   });
-  res.json((await withScope(await listUsers({ id: existing.id })))[0]);
+  const updatedUser = (await withScope(await listUsers({ id: existing.id })))[0];
+  if (d.password) {
+    sendAccountCreationAlert({
+      user: updatedUser,
+      plainPassword: d.password,
+    }).catch((err) => console.error('Failed to dispatch password reset alert:', err.message));
+  }
+  res.json(updatedUser);
 });
 
 /** One account, if this user may see it (for its history page). */

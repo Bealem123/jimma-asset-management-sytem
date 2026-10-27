@@ -31,6 +31,20 @@ describe('physical verification', () => {
   it('only a verification manager can open a campaign, and it snapshots what the database says', async () => {
     await api('post', '/api/verification', inspector).send({ name: 'x', kebele_id: fx.k1 }).expect(403);
     await api('post', '/api/verification', fx.users.hirmataAdmin).send({ name: 'Nothing here', kebele_id: fx.k3 }).expect(400);
+    // only one's own area, and a Kebele inside the Kifle Ketema chosen with it
+    const refused = async (user, body, field) => {
+      const r = await api('post', '/api/verification', user).send({ name: 'Not mine', ...body }).expect(400);
+      assert.ok(r.body.details?.[field], JSON.stringify(r.body));
+    };
+    await refused(fx.users.kebeleB, { kebele_id: fx.k1 }, 'kebele_id');
+    await refused(fx.users.hirmataAdmin, { kebele_id: fx.k1 }, 'kebele_id');
+    await refused(fx.users.jirenAdmin, { kifle_ketema_id: fx.hirmata.id }, 'kifle_ketema_id');
+    await refused(fx.users.jirenAdmin, { kifle_ketema_id: fx.jiren.id, kebele_id: fx.k3 }, 'kebele_id'); // k3 lies in Hirmata
+    // with one Kebele, a stock-taking without an area is of that Kebele, and named after it
+    const own = (await api('post', '/api/verification', fx.users.kebeleA).send({ name: 'My Kebele' }).expect(201)).body;
+    assert.deepEqual([own.kebele_id, own.kifle_ketema_id], [fx.k1, fx.jiren.id]);
+    await db('verification_items').where({ campaign_id: own.id }).del();
+    await db('verification_campaigns').where({ id: own.id }).del();
     const res = await api('post', '/api/verification', fx.users.jirenAdmin).send({ name: 'Kebele A check', kebele_id: fx.k1 }).expect(201);
     campaign = res.body;
     assert.equal(campaign.summary.total, 3);
@@ -39,8 +53,24 @@ describe('physical verification', () => {
     assert.ok(items.every((i) => i.expected_kebele_name === 'Jiren Kebele A'));
   });
 
+  it('the Sector Administrator follows the results for its own assets but does not record them', async () => {
+    await api('post', `/api/verification/${campaign.id}/record`, fx.users.officer).send({ asset: A.asset_code }).expect(403);
+    const seen = (await api('get', `/api/verification/${campaign.id}`, fx.users.officer).expect(200)).body;
+    assert.equal(seen.can_record, false);
+    assert.equal(seen.summary.total, 3);
+    assert.ok((await api('get', '/api/verification', fx.users.officer).expect(200)).body.some((c) => c.id === campaign.id));
+    // a stock-taking that holds none of your assets is not listed
+    const elsewhere = await makeUser('trade_c', 'SECTOR_ADMIN', { sectors: [fx.business.id], kebeles: [fx.k3] });
+    assert.equal((await api('get', '/api/verification', elsewhere).expect(200)).body.some((c) => c.id === campaign.id), false);
+    assert.equal((await api('get', '/api/verification', fx.users.kebeleC).expect(200)).body.some((c) => c.id === campaign.id), false);
+  });
+
   it('finds an asset in place, in the wrong place, or not at all', async () => {
-    const ok = await api('post', `/api/verification/${campaign.id}/record`, inspector).send({ asset: A.asset_code, found_condition: 'GOOD' }).expect(200);
+    // the QR code printed on A's label holds its public card address
+    await api('get', `/api/assets/${A.id}/qr.svg`, fx.users.officer).expect(200);
+    const label = `https://jimma.example/a/${(await db('assets').where({ id: A.id }).first()).public_token}`;
+    const ok = await api('post', `/api/verification/${campaign.id}/record`, inspector).send({ asset: label, method: 'SCAN', found_condition: 'GOOD' }).expect(200);
+    assert.equal(ok.body.asset_id, A.id);
     assert.equal(ok.body.result, 'FOUND');
     assert.equal(ok.body.discrepancy_status, 'NONE');
 
@@ -153,15 +183,34 @@ describe('inspections, follow-ups, alerts and notifications', () => {
     assert.equal((await db('follow_up_actions').where({ asset_id: X.id })).length, 2);
   });
 
-  it('closes a follow-up with what was done', async () => {
+  it('the keeper reports a follow-up done; the Inspector checks it, then closes it or sends it back', async () => {
     const open = (await api('get', '/api/assets/follow-ups/open', fx.users.officer)).body;
     assert.equal(open.length, 2);
-    const id = open[0].id;
-    await api('post', `/api/assets/${X.id}/follow-ups/${id}/close`, fx.users.officer).send({}).expect(400);
-    await api('post', `/api/assets/${X.id}/follow-ups/${id}/close`, fx.users.officer).send({ resolution: 'Housing replaced' }).expect(200);
-    await api('post', `/api/assets/${X.id}/follow-ups/${id}/close`, fx.users.officer).send({ resolution: 'again' }).expect(409);
-    await api('post', `/api/assets/${X.id}/follow-ups`, fx.users.officer).send({ description: 'Order spare filter', due_date: dayOffset(30) }).expect(201);
-    assert.equal((await api('get', '/api/assets/follow-ups/open', fx.users.officer)).body.length, 2);
+    const [first, second] = open;
+    const close = (f, user, body = {}) => api('post', `/api/assets/${X.id}/follow-ups/${f.id}/close`, user).send(body);
+    await close(first, fx.users.officer).expect(400); // say what was done
+    const reported = await close(first, fx.users.officer, { resolution: 'Housing replaced' }).expect(200);
+    assert.equal(reported.body.status, 'REPORTED');
+    assert.equal(reported.body.reported_by, fx.users.officer.id);
+    await close(first, fx.users.officer, { resolution: 'again' }).expect(409); // it waits for a check
+    assert.ok((await api('get', '/api/notifications', inspector)).body.some((n) => n.type === 'FOLLOW_UP_REPORTED'));
+    assert.equal((await api('get', '/api/assets/follow-ups/open', fx.users.officer)).body.length, 2, 'still open until checked');
+    // sent back: open again, and the keeper is told why
+    await api('post', `/api/assets/${X.id}/follow-ups/${first.id}/reopen`, fx.users.officer).send({ note: 'x' }).expect(403);
+    await api('post', `/api/assets/${X.id}/follow-ups/${first.id}/reopen`, inspector).send({ note: 'The housing still leaks' }).expect(200);
+    assert.ok((await api('get', '/api/notifications', fx.users.officer)).body.some((n) => n.type === 'FOLLOW_UP_REOPENED' && /still leaks/.test(n.body)));
+    await close(first, fx.users.officer, { resolution: 'Housing resealed' }).expect(200);
+    const checked = await close(first, inspector).expect(200); // confirms what was reported
+    assert.equal(checked.body.status, 'DONE');
+    assert.equal(checked.body.resolution, 'Housing resealed');
+    assert.equal(checked.body.closed_by, inspector.id);
+    // the Kebele Administrator checks too, and may close one directly
+    assert.equal((await close(second, fx.users.kebeleA, { resolution: 'Checked on site: repaired' }).expect(200)).body.status, 'DONE');
+    // a note the keeper added itself it closes on its own word
+    const note = (await api('post', `/api/assets/${X.id}/follow-ups`, fx.users.officer).send({ description: 'Order spare filter', due_date: dayOffset(30) }).expect(201)).body;
+    assert.equal((await close(note, fx.users.officer, { resolution: 'Ordered' }).expect(200)).body.status, 'DONE');
+    await api('post', `/api/assets/${X.id}/follow-ups`, fx.users.officer).send({ description: 'Paint the frame' }).expect(201);
+    assert.equal((await api('get', '/api/assets/follow-ups/open', fx.users.officer)).body.length, 1);
     assert.equal((await api('get', '/api/assets/follow-ups/open', fx.users.nobody)).body.length, 0);
   });
 
@@ -277,15 +326,51 @@ describe('QR codes, scanning, map and bulk import', () => {
   });
 
   it('puts assets on the map with the same filters and area limits as the list', async () => {
+    const drawn = (rows) => rows.filter((p) => p.placed === 'GPS');
     const all = (await api('get', '/api/assets/map', fx.users.mayor).expect(200)).body;
-    assert.equal(all.length, 3, 'assets without coordinates are not mapped');
-    assert.ok(all.every((p) => p.latitude && p.longitude && p.asset_code));
+    assert.equal(drawn(all).length, 3, 'without an area centre, only the assets with GPS have their own place');
+    assert.ok(drawn(all).every((p) => p.latitude && p.longitude && p.asset_code));
+    assert.ok(all.some((p) => p.placed === 'CITY' && p.latitude === 7.6738 && p.longitude === 36.8346), 'the others wait at the city centre');
     const one = (await api('get', `/api/assets/map?kebele_id=${fx.k2}`, fx.users.mayor)).body;
-    assert.equal(one.length, 1);
+    assert.equal(drawn(one).length, 1);
     const mine = (await api('get', '/api/assets/map', fx.users.officer)).body;
-    assert.equal(mine.length, 2, 'the officer cannot see the far asset');
+    assert.equal(drawn(mine).length, 2, 'the officer cannot see the far asset');
     assert.equal((await api('get', '/api/assets/map', fx.users.nobody)).body.length, 0);
-    assert.equal((await api('get', `/api/assets/map?kifle_ketema_id=${fx.hirmata.id}`, fx.users.mayor)).body.length, 1);
+    assert.equal(drawn((await api('get', `/api/assets/map?kifle_ketema_id=${fx.hirmata.id}`, fx.users.mayor)).body).length, 1);
+  });
+
+  it('draws an asset without GPS at the centre of its Kebele, its Kifle Ketema or the city, as the City sets them', async () => {
+    const kebele = await db('kebeles').where({ id: fx.k2 }).first();
+    // a centre is a point inside Jimma, both coordinates or neither
+    await api('patch', `/api/master/kebeles/${kebele.id}`, fx.users.super).send({ latitude: 7.68 }).expect(400);
+    await api('patch', `/api/master/kebeles/${kebele.id}`, fx.users.super).send({ latitude: 41.85, longitude: -87.66 }).expect(400);
+    await api('patch', `/api/master/kebeles/${kebele.id}`, fx.users.super).send({ latitude: 7.68, longitude: 36.84 }).expect(200);
+    await api('patch', `/api/master/kifle-ketemas/${kebele.kifle_ketema_id}`, fx.users.super).send({ latitude: 7.67, longitude: 36.83 }).expect(200);
+    const map = async () => (await api('get', `/api/assets/map?kebele_id=${kebele.id}`, fx.users.mayor).expect(200)).body;
+    const [a] = (await map()).filter((p) => p.placed === 'GPS');
+    const at = (rows) => rows.find((p) => p.id === a.id);
+    try {
+      assert.deepEqual([at(await map()).latitude, at(await map()).longitude], [a.latitude, a.longitude], 'its own GPS position wins over the centre');
+      await db('assets').where({ id: a.id }).update({ latitude: null, longitude: null });
+      let p = at(await map());
+      assert.deepEqual([p.placed, p.latitude, p.longitude, p.gps_outside], ['KEBELE', 7.68, 36.84, false]);
+      // a position recorded outside Jimma is never drawn there: the asset goes to its area, flagged for correction
+      await db('assets').where({ id: a.id }).update({ latitude: 41.8523, longitude: -87.6669 });
+      p = at(await map());
+      assert.deepEqual([p.placed, p.latitude, p.gps_outside, Number(p.recorded_latitude)], ['KEBELE', 7.68, true, 41.8523]);
+      // without a Kebele centre, the Kifle Ketema's
+      await db('kebeles').where({ id: kebele.id }).update({ latitude: null, longitude: null });
+      p = at(await map());
+      assert.deepEqual([p.placed, p.latitude, p.longitude], ['KIFLE_KETEMA', 7.67, 36.83]);
+      // and with neither, the city centre: still in Jimma, still marked as approximate
+      await db('kifle_ketemas').where({ id: kebele.kifle_ketema_id }).update({ latitude: null, longitude: null });
+      p = at(await map());
+      assert.deepEqual([p.placed, p.latitude, p.longitude], ['CITY', 7.6738, 36.8346]);
+    } finally {
+      await db('assets').where({ id: a.id }).update({ latitude: a.latitude, longitude: a.longitude });
+      await db('kebeles').where({ id: kebele.id }).update({ latitude: null, longitude: null });
+      await db('kifle_ketemas').where({ id: kebele.kifle_ketema_id }).update({ latitude: null, longitude: null });
+    }
   });
 
   const HEADER = 'name,category,asset_type,sector,department,kifle_ketema,kebele,location_detail,latitude,longitude,serial_number,registration_number,owner_name,condition,acquisition_date,acquisition_cost';
@@ -425,6 +510,27 @@ describe('dashboard and analytics', () => {
     assert.ok(a.lifecycle_cost[0].total_cost >= 1600000);
     const sector = (await api('get', '/api/analytics', fx.users.sectorAdmin).expect(200)).body;
     assert.equal(sector.can_see_money, true);
+  });
+
+  it('counts only what is really there: the user\'s own stock-taking, assets in operation, unrecorded money', async () => {
+    // a Rent Sector Administrator of Kebele B: one asset in operation with no use, one still waiting for verification
+    const rent = await db('sectors').where({ code: 'RNT' }).first();
+    const sa = await makeUser('rent_b', 'SECTOR_ADMIN', { sectors: [rent.id], kebeles: [fx.k2] });
+    const body = (over) => assetBody(fx, { sector_id: rent.id, department_id: null, kebele_id: fx.k2, details: { rental_type: 'Hall', occupancy: 'Vacant' }, ...over });
+    const made = await api('post', '/api/assets', sa).send(body({ name: 'Grader in use', current_valuation: 850000, valuation_date: '2026-10-01' }));
+    assert.equal(made.status, 201, JSON.stringify(made.body));
+    const working = made.body;
+    await activateAsset(fx, working, sa);
+    await api('post', '/api/assets', sa).send(body({ name: 'Not yet verified' })).expect(201);
+    const a = (await api('get', '/api/analytics', sa).expect(200)).body;
+    const ind = Object.fromEntries(a.indicators.map((i) => [i.key, i]));
+    assert.equal(ind.underused.value, 100, '1 idle of the 1 asset in operation, not 1 of 2');
+    assert.equal(ind.verified_ok, undefined, 'the stock-taking of Kebele A holds none of these assets');
+    assert.equal(a.value_analysis.acquisition_cost, null, 'no purchase price recorded is not 0 ETB');
+    assert.equal(a.value_analysis.current_valuation, 850000);
+    // in Kebele A the stock-taking counts only the assets checked so far
+    const own = (await api('get', '/api/analytics', fx.users.officer).expect(200)).body;
+    assert.equal(own.indicators.find((i) => i.key === 'verified_ok'), undefined, 'nothing checked yet');
   });
 
   it('shows the Mayor the performance of each Kifle Ketema, not of each Kebele', async () => {

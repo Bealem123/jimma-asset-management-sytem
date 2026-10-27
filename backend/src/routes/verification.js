@@ -4,14 +4,15 @@ import { db } from '../db.js';
 import { config } from '../config.js';
 import { authenticate } from '../middleware/auth.js';
 import { HttpError, conflict, forbidden, notFound, parse } from '../middleware/errors.js';
-import { applyScope, has } from '../lib/permissions.js';
+import { allowedAreas, applyScope, has, hasAllScope } from '../lib/permissions.js';
 import { logAudit } from '../lib/audit.js';
 import { fail, findVisibleByCodeOrId } from '../lib/assetGuards.js';
 import { notifyAsset } from '../lib/notify.js';
+import { RETIRED_LABEL, readLabel } from '../lib/publicAsset.js';
 import { toCsv } from '../lib/csv.js';
-import { CONDITIONS, VERIFICATION_RESULTS } from '../lib/constants.js';
+import { CONDITIONS, ROLES, VERIFICATION_RESULTS } from '../lib/constants.js';
 import {
-  bool, lat, lng, oneOf, optDate, optIdRef, optStr, reqStr,
+  bool, lat, lng, oneOf, optDate, optIdRef, optStr, reqStr, likePattern
 } from '../lib/schemas.js';
 
 // Physical verification: the City compares what the database says with what officers find on the ground.
@@ -21,7 +22,12 @@ import {
 const router = Router();
 router.use(authenticate);
 
-const needRecord = (user) => { if (!has(user, 'verification.record') && !has(user, 'verification.manage')) throw forbidden('Your role cannot take part in verification.'); };
+// Who may follow a stock-taking: those who record or manage it, the keepers of the assets (asset.edit), who see
+// the results for their own assets without recording them, and the Internal Auditor, read-only and city-wide.
+const needView = (user) => {
+  if (user.role === ROLES.AUDITOR) return;
+  if (!['verification.record', 'verification.manage', 'asset.edit'].some((p) => has(user, p))) throw forbidden('Your role cannot take part in verification.');
+};
 const needManage = (user) => { if (!has(user, 'verification.manage')) throw forbidden('Only a verification manager can do this.'); };
 
 const itemsQuery = (user) => applyScope(
@@ -65,11 +71,22 @@ async function summary(user, campaignId) {
 // ------------------------------------------------------------------ campaigns
 
 router.get('/', async (req, res) => {
-  needRecord(req.user);
-  const campaigns = await db('verification_campaigns as c').leftJoin('users as u', 'u.id', 'c.created_by')
+  needView(req.user);
+  const f = parse(z.object({
+    q: z.string().trim().max(100).optional(),
+    status: z.preprocess((v) => v || undefined, z.enum(['OPEN', 'CLOSED']).optional()),
+  }), req.query);
+  const q = db('verification_campaigns as c').leftJoin('users as u', 'u.id', 'c.created_by')
     .leftJoin('kifle_ketemas as k', 'k.id', 'c.kifle_ketema_id').leftJoin('kebeles as b', 'b.id', 'c.kebele_id').leftJoin('sectors as s', 's.id', 'c.sector_id')
     .select('c.*', 'u.full_name as created_by_name', 'k.name as kifle_ketema_name', 'b.name as kebele_name', 's.name as sector_name')
     .orderBy('c.id', 'desc').limit(100);
+  if (f.q) q.where('c.name', 'like', likePattern(f.q));
+  if (f.status) q.where('c.status', f.status);
+  // only the stock-takings that include at least one asset of the user's own area
+  if (!hasAllScope(req.user)) {
+    q.whereIn('c.id', applyScope(db('verification_items as vi').join('assets', 'assets.id', 'vi.asset_id'), req.user).distinct('vi.campaign_id'));
+  }
+  const campaigns = await q;
   const out = [];
   for (const c of campaigns) out.push({ ...c, summary: await summary(req.user, c.id) });
   res.json(out);
@@ -80,6 +97,21 @@ router.post('/', async (req, res) => {
   const d = parse(z.object({
     name: reqStr(200, 'Name'), kifle_ketema_id: optIdRef, kebele_id: optIdRef, sector_id: optIdRef, due_date: optDate,
   }), req.body);
+  // the area must be the user's own, and a Kebele must lie in the Kifle Ketema chosen with it
+  const allowed = await allowedAreas(req.user);
+  if (d.kifle_ketema_id && allowed && !allowed.kifle.has(d.kifle_ketema_id)) throw fail('kifle_ketema_id', 'This Kifle Ketema is outside your area.');
+  if (d.kebele_id) {
+    const kebele = await db('kebeles').where({ id: d.kebele_id }).first();
+    if (!kebele || (allowed && !allowed.kebeles.has(d.kebele_id))) throw fail('kebele_id', 'This Kebele is outside your area.');
+    if (d.kifle_ketema_id && kebele.kifle_ketema_id !== d.kifle_ketema_id) throw fail('kebele_id', 'This Kebele is not in the chosen Kifle Ketema.');
+  }
+  if (d.sector_id && req.user.role === 'SECTOR_ADMIN' && !req.user.scope.sectors.includes(d.sector_id)) throw fail('sector_id', 'This sector is outside your area.');
+  // one Kebele (or Kifle Ketema) in all: the stock-taking is named after it, not "the whole area you can see"
+  if (allowed && !d.kebele_id && !d.kifle_ketema_id) {
+    if (allowed.kebeles.size === 1) [d.kebele_id] = allowed.kebeles;
+    else if (allowed.kifle.size === 1) [d.kifle_ketema_id] = allowed.kifle;
+  }
+  if (d.kebele_id && !d.kifle_ketema_id) d.kifle_ketema_id = (await db('kebeles').where({ id: d.kebele_id }).first()).kifle_ketema_id;
   const q = applyScope(db('assets'), req.user).whereNotIn('assets.status', ['DISPOSED', 'PLANNED']).whereNull('assets.archived_at')
     .where('assets.approval_state', 'ACTIVE');
   if (d.kebele_id) q.where('assets.kebele_id', d.kebele_id);
@@ -106,7 +138,7 @@ router.post('/', async (req, res) => {
 });
 
 router.get('/:id', async (req, res) => {
-  needRecord(req.user);
+  needView(req.user);
   const c = await loadCampaign(req.params.id);
   const f = parse(z.object({
     result: z.string().max(20).optional(), discrepancy: z.string().max(20).optional(), q: z.string().max(100).optional(),
@@ -117,7 +149,7 @@ router.get('/:id', async (req, res) => {
     if (f.result) q.where('i.result', f.result);
     if (f.discrepancy === 'open') q.whereIn('i.discrepancy_status', ['OPEN', 'INVESTIGATING']);
     else if (f.discrepancy) q.where('i.discrepancy_status', f.discrepancy);
-    if (f.q) q.where((b) => b.where('assets.asset_code', 'like', `%${f.q}%`).orWhere('assets.name', 'like', `%${f.q}%`));
+    if (f.q) q.where((b) => b.where('assets.asset_code', 'like', likePattern(f.q)).orWhere('assets.name', 'like', likePattern(f.q)));
     return q;
   };
   const { n } = await build().clear('select').count({ n: 'i.id' }).first();
@@ -131,7 +163,7 @@ router.get('/:id', async (req, res) => {
 // ------------------------------------------------------------------ recording what the officer found
 
 const recordSchema = z.object({
-  asset: reqStr(60, 'The asset'), // asset code (from a QR scan) or id
+  asset: reqStr(300, 'The asset'), // what the label holds (asset code or QR card address), or the id
   result: oneOf(VERIFICATION_RESULTS, 'Result').default('FOUND'),
   found_kifle_ketema_id: optIdRef,
   found_kebele_id: optIdRef,
@@ -148,7 +180,9 @@ router.post('/:id/record', async (req, res) => {
   const c = await loadCampaign(req.params.id);
   if (c.status !== 'OPEN') throw conflict('This campaign is closed.');
   const d = parse(recordSchema, req.body);
-  const asset = await findVisibleByCodeOrId(req.user, d.asset.match(/AST-\d{6}/i)?.[0] || d.asset);
+  const label = await readLabel(d.asset);
+  if (label?.retired) throw new HttpError(410, RETIRED_LABEL);
+  const asset = await findVisibleByCodeOrId(req.user, label?.code || d.asset);
   const item = await db('verification_items').where({ campaign_id: c.id, asset_id: asset.id }).first();
   if (!item) throw new HttpError(404, `${asset.asset_code} is not part of this campaign.`);
   if (['CORRECTED', 'DISMISSED'].includes(item.discrepancy_status)) throw conflict('This asset was already verified and its discrepancy resolved.');
@@ -292,7 +326,7 @@ router.post('/:id/close', async (req, res) => {
 });
 
 router.get('/:id/report.csv', async (req, res) => {
-  needRecord(req.user);
+  needView(req.user);
   const c = await loadCampaign(req.params.id);
   const rows = await itemsQuery(req.user).where('i.campaign_id', c.id).orderBy('assets.asset_code');
   await logAudit(null, req.user, { action: 'EXPORT', entity: 'verification', entityId: c.id, summary: `Exported verification report "${c.name}" (${rows.length} rows)` });

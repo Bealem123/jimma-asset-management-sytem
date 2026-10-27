@@ -83,42 +83,81 @@ describe('Kebele administrator', () => {
     assert.equal((await api('get', `/api/assets/${mine.id}`, ka)).body.asset.approval_state, 'ACTIVE');
   });
 
-  it('cannot register assets (the Sector Administrator registers) or decide requests (the Kifle Ketema Administrator decides)', async () => {
+  it('cannot register assets (the Sector Administrator registers); it reviews requests, the Kifle Ketema Administrator approves', async () => {
     await api('post', '/api/assets', ka).send({ name: 'Mine', category_id: fx.machinery.id, sector_id: fx.construction.id, kebele_id: fx.k1 }).expect(403);
     const a = await createAsset(fx, fx.users.officer, { kebele_id: fx.k1 });
     const t = await api('post', `/api/assets/${a.id}/transfers`, fx.users.officer).send({ to_kebele_id: fx.k2, transfer_date: '2026-06-01', reason: 'x', authorized_by: 'y' }).expect(202);
+    assert.equal(t.body.request.status, 'PENDING');
+    const told = async (u) => (await api('get', '/api/notifications', u)).body.some((n) => n.type === 'APPROVAL_PENDING' && n.asset_id === a.id);
+    assert.equal(await told(ka), true, 'the reviewer hears of it first');
+    assert.equal(await told(fx.users.jirenAdmin), false);
     await api('post', `/api/requests/${t.body.request.id}/approve`, ka).expect(403);
+    await api('post', `/api/requests/${t.body.request.id}/approve`, fx.users.jirenAdmin).expect(409); // not reviewed yet
+    await api('post', `/api/requests/${t.body.request.id}/review`, fx.users.kebeleB).expect(404); // not the asset's Kebele
+    await api('post', `/api/requests/${t.body.request.id}/review`, ka).expect(200);
+    assert.equal(await told(fx.users.jirenAdmin), true, 'then the approver');
     await api('post', `/api/requests/${t.body.request.id}/approve`, fx.users.jirenAdmin).expect(200);
+    assert.equal((await db('assets').where({ id: a.id }).first()).kebele_id, fx.k2);
+  });
+
+  it('sends a request back at its own step, but not once it has reviewed it', async () => {
+    const a = await createAsset(fx, fx.users.officer, { kebele_id: fx.k1 });
+    const body = { kind: 'RETIREMENT', reason: 'Worn out', disposal_date: '2026-07-01' };
+    const first = await api('post', `/api/assets/${a.id}/disposal`, fx.users.officer).send(body).expect(202);
+    await api('post', `/api/requests/${first.body.request.id}/reject`, ka).send({ comment: 'Still in use' }).expect(200);
+    const second = await api('post', `/api/assets/${a.id}/disposal`, fx.users.officer).send(body).expect(202);
+    await api('post', `/api/requests/${second.body.request.id}/review`, ka).expect(200);
+    await api('post', `/api/requests/${second.body.request.id}/reject`, ka).send({ comment: 'Changed my mind' }).expect(409);
+    await api('post', `/api/requests/${second.body.request.id}/reject`, fx.users.jirenAdmin).send({ comment: 'Not yet' }).expect(200);
+  });
+
+  it('moves an asset to another Kebele or sector of its Kifle Ketema; its request counts as the review', async () => {
+    const a = await createAsset(fx, fx.users.officer, { kebele_id: fx.k1 });
+    const send = (over) => api('post', `/api/assets/${a.id}/transfers`, ka).send({ transfer_date: '2026-06-01', reason: 'Needed in B', authorized_by: 'Kebele council', ...over });
+    await send({ to_kebele_id: fx.k3 }).expect(403); // Hirmata: another Kifle Ketema
+    await send({ to_kifle_ketema_id: fx.jiren.id }).expect(400); // a Kebele must be chosen
+    const t = await send({ to_kebele_id: fx.k2, to_sector_id: fx.business.id }).expect(202);
+    assert.equal(t.body.request.status, 'REVIEWED');
+    assert.equal(t.body.request.reviewed_by, ka.id);
+    await api('post', `/api/requests/${t.body.request.id}/approve`, fx.users.jirenAdmin).expect(200);
+    const moved = await db('assets').where({ id: a.id }).first();
+    assert.equal(moved.kebele_id, fx.k2);
+    assert.equal(moved.sector_id, fx.business.id);
   });
 
   it('has the Kebele Administrator label and verifier permissions', async () => {
     const me = (await api('get', '/api/auth/me', ka)).body.user;
     assert.equal(me.role_label, 'Kebele Administrator');
-    for (const p of ['asset.review', 'verification.manage', 'user.manage_sector_admins']) assert.ok(me.permissions.includes(p), p);
+    for (const p of ['asset.review', 'request.review', 'verification.manage', 'user.manage_sector_admins']) assert.ok(me.permissions.includes(p), p);
     for (const p of ['asset.create', 'asset.approve', 'request.decide', 'maintenance.record', 'inspection.record', 'user.manage']) assert.ok(!me.permissions.includes(p), p);
   });
 });
 
-describe('creating the 186 administrator accounts', () => {
+describe('creating the 194 standard accounts of the 8 roles', () => {
   before(async () => { await resetDb(); });
 
-  it('plans exactly 1 + 3 + 13 + (13 x 13 = 169) = 186 accounts on an empty system', async () => {
+  it('plans exactly 1 + 3 + 13 + (13 x 13 = 169) administrators + 1 + 1 + 3 + 3 specialists = 194 accounts on an empty system', async () => {
     const plan = await planAdminAccounts();
     const count = (role) => plan.filter((p) => p.role === role).length;
-    assert.equal(plan.length, 186);
+    assert.equal(plan.length, 194);
     assert.equal(count('SUPER_ADMIN'), 1);
     assert.equal(count('KIFLE_ADMIN'), 3);
     assert.equal(count('KEBELE_ADMIN'), 13);
     assert.equal(count('SECTOR_ADMIN'), 169);
-    assert.equal(new Set(plan.map((p) => p.username)).size, 186, 'usernames are unique');
+    assert.equal(count('EXECUTIVE'), 1);
+    assert.equal(count('AUDITOR'), 1);
+    assert.equal(count('FINANCIAL_OFFICER'), 3);
+    assert.equal(count('INSPECTOR'), 3);
+    assert.equal(new Set(plan.map((p) => p.role)).size, 8, 'every role has an account');
+    assert.equal(new Set(plan.map((p) => p.username)).size, 194, 'usernames are unique');
     assert.ok(plan.every((p) => /^[a-z0-9._-]{3,}$/.test(p.username)));
   });
 
   let result;
   it('creates them with the right scope, a temporary password and a forced change', async () => {
     result = await provisionAdminAccounts();
-    assert.equal(result.created.length, 186);
-    assert.equal(await db('users').count({ n: 'id' }).first().then((r) => Number(r.n)), 186);
+    assert.equal(result.created.length, 194);
+    assert.equal(await db('users').count({ n: 'id' }).first().then((r) => Number(r.n)), 194);
     const scopeOf = async (username) => {
       const u = await db('users').where({ username }).first();
       return {
@@ -155,6 +194,15 @@ describe('creating the 186 administrator accounts', () => {
     const perKebele = await db('user_kebeles as k').join('users as u', 'u.id', 'k.user_id').where('u.role', 'SECTOR_ADMIN').groupBy('k.kebele_id').count({ n: 'u.id' });
     assert.equal(perKebele.length, 13);
     assert.ok(perKebele.every((r) => Number(r.n) === 13));
+    // the Mayor and the Internal Auditor see the whole City by role; a Financial Officer and an Inspector per Kifle Ketema
+    for (const username of ['mayor', 'auditor']) {
+      const x = await scopeOf(username);
+      assert.deepEqual([x.kifle, x.kebeles, x.sectors], [[], [], []]);
+    }
+    for (const username of ['finance.jiren', 'inspector.jiren']) {
+      const x = await scopeOf(username);
+      assert.deepEqual([x.kifle, x.kebeles, x.sectors], [[jiren.id], [], []]);
+    }
     const pairs = new Set((await db('users').where({ role: 'SECTOR_ADMIN' })).map((u) => u.username));
     assert.equal(pairs.size, 169);
     assert.ok((await db('users')).every((u) => u.must_change_password && u.is_active && u.password_hash.startsWith('$2')));
@@ -162,8 +210,9 @@ describe('creating the 186 administrator accounts', () => {
 
   it('gives every account its own strong, readable temporary password, and stores only a hash', () => {
     const pw = result.created.map((c) => c.password);
-    assert.equal(new Set(pw).size, 186);
-    assert.ok(pw.every((p) => /^[A-Za-z2-9]{14}$/.test(p) && !/[0OIl1]/.test(p)));
+    assert.equal(new Set(pw).size, 194);
+    // 14 characters meeting the password rule (both cases, a number, a symbol), without look-alikes (0 O I l 1)
+    assert.ok(pw.every((p) => p.length === 14 && /[a-z]/.test(p) && /[A-Z]/.test(p) && /\d/.test(p) && /[^A-Za-z\d]/.test(p) && !/[0OIl1]/.test(p)));
     assert.equal(temporaryPassword(20).length, 20);
   });
 
@@ -171,13 +220,14 @@ describe('creating the 186 administrator accounts', () => {
     const before = await db('users').select('id', 'password_hash');
     const again = await provisionAdminAccounts();
     assert.equal(again.created.length, 0);
-    assert.equal(again.skipped.length, 185); // the Super Administrator already exists, so it is not planned again
-    assert.equal(again.planned, 185);
+    // every area already has its account, so nothing is planned again
+    assert.equal(again.skipped.length, 0);
+    assert.equal(again.planned, 0);
     assert.deepEqual(await db('users').select('id', 'password_hash'), before);
   });
 
   it('records the creation in the audit trail', async () => {
-    assert.equal(await db('audit_logs').where({ action: 'USER_CREATE' }).count({ n: 'id' }).first().then((r) => Number(r.n)), 186);
+    assert.equal(await db('audit_logs').where({ action: 'USER_CREATE' }).count({ n: 'id' }).first().then((r) => Number(r.n)), 194);
   });
 
   it('forces a new password at first sign-in; nothing else works until it is changed', async () => {
@@ -214,8 +264,36 @@ describe('creating the 186 administrator accounts', () => {
     await resetDb();
     await makeUser('existing_super', 'SUPER_ADMIN');
     const plan = await planAdminAccounts();
-    assert.equal(plan.length, 185);
+    assert.equal(plan.length, 193);
     assert.ok(!plan.some((p) => p.role === 'SUPER_ADMIN'));
+  });
+
+  it('does not create a second Mayor or Internal Auditor, nor a Financial Officer or Inspector where a Kifle Ketema has one', async () => {
+    await resetDb();
+    await makeUser('existing_mayor', 'EXECUTIVE');
+    await makeUser('existing_auditor', 'AUDITOR');
+    const hirmata = await db('kifle_ketemas').where({ name: 'Hirmata' }).first();
+    const fo = await makeUser('existing_fo', 'FINANCIAL_OFFICER');
+    await db('user_kifle_ketemas').insert({ user_id: fo.id, kifle_ketema_id: hirmata.id });
+    const plan = await planAdminAccounts();
+    assert.equal(plan.length, 194 - 3);
+    assert.ok(!plan.some((p) => p.role === 'EXECUTIVE' || p.role === 'AUDITOR'));
+    assert.deepEqual(plan.filter((p) => p.role === 'FINANCIAL_OFFICER').map((p) => p.username).sort(), ['finance.gibe', 'finance.jiren']);
+    assert.equal(plan.filter((p) => p.role === 'INSPECTOR').length, 3);
+  });
+
+  it('does not create a second administrator for an area whose administrator has another username', async () => {
+    await resetDb();
+    const gibe = await db('kifle_ketemas').where({ name: 'Gibe' }).first();
+    const kebele = await db('kebeles').where({ name: 'Jiren' }).first();
+    const sector = await db('sectors').where({ code: 'CON' }).first();
+    await makeUser('renamed_kifle', 'KIFLE_ADMIN', { kifle: [gibe.id] });
+    await makeUser('renamed_kebele', 'KEBELE_ADMIN', { kebeles: [kebele.id] });
+    await makeUser('renamed_sector', 'SECTOR_ADMIN', { kebeles: [kebele.id], sectors: [sector.id] });
+    const names = new Set((await planAdminAccounts()).map((p) => p.username));
+    assert.equal(names.size, 194 - 3);
+    for (const n of ['kifle.gibe', 'kebele.jiren', 'sector.con.jiren']) assert.ok(!names.has(n), n);
+    assert.ok(names.has('kifle.jiren') && names.has('kebele.hirmata') && names.has('sector.agr.jiren'));
   });
 });
 
@@ -231,6 +309,10 @@ describe('the hierarchy end to end: Super Admin -> Kifle Ketema -> Kebele -> Sec
   before(async () => {
     await resetDb();
     await provisionAdminAccounts();
+    // this scenario starts with the hierarchy only: the Super Administrator creates the specialists below
+    const specialists = await db('users').whereIn('role', ['EXECUTIVE', 'AUDITOR', 'FINANCIAL_OFFICER', 'INSPECTOR']).pluck('id');
+    await db('user_kifle_ketemas').whereIn('user_id', specialists).del();
+    await db('users').whereIn('id', specialists).del();
     for (const n of ['superadmin', 'kifle.jiren', 'kifle.gibe', 'kebele.jiren', 'kebele.hirmata', 'sector.con.jiren', 'sector.agr.jiren', 'sector.con.hirmata']) as[n] = await login(n);
     [jirenKifle, hirmata, gibe] = await Promise.all(['Jiren', 'Hirmata', 'Gibe'].map((n) => db('kifle_ketemas').where({ name: n }).first()));
     [kebJiren, kebHirmata, kebSeto] = await Promise.all(['Jiren', 'Hirmata', 'Seto Semero'].map((n) => db('kebeles').where({ name: n }).first()));
@@ -281,15 +363,14 @@ describe('the hierarchy end to end: Super Admin -> Kifle Ketema -> Kebele -> Sec
     assert.equal(await sees('sector.con.hirmata'), false); // same sector, other Kebele
   });
 
-  it('a Kifle Ketema Administrator sees the Kebele and Sector administrators of its own Kebeles, and nobody else', async () => {
+  it('a Kifle Ketema Administrator sees the Kebele Administrators of its own Kebeles (the accounts it creates), and nobody else', async () => {
     const list = (await api('get', '/api/users', as['kifle.jiren']).expect(200)).body;
     const names = list.map((u) => u.username);
     assert.ok(names.includes('kebele.jiren'));
-    assert.ok(names.includes('sector.con.jiren') && names.includes('sector.agr.jiren'));
+    assert.ok(!names.includes('sector.con.jiren') && !names.includes('sector.agr.jiren'), 'the Sector Administrators are their Kebele Administrator\'s');
     assert.ok(!names.includes('kebele.hirmata') && !names.includes('sector.con.hirmata') && !names.includes('kifle.gibe') && !names.includes('superadmin'));
-    assert.equal(list.find((u) => u.username === 'kebele.jiren').read_only, false);
-    assert.equal(list.find((u) => u.username === 'sector.con.jiren').read_only, true);
-    assert.equal(list.length, 2 * 14, 'two Kebeles: one Kebele Administrator and 13 Sector Administrators each');
+    assert.ok(list.every((u) => u.role === 'KEBELE_ADMIN' && !u.read_only));
+    assert.equal(list.length, 2, 'two Kebeles: one Kebele Administrator each');
   });
 
   it('a Kifle Ketema Administrator manages Kebele Administrators of its Kifle Ketema only', async () => {
@@ -302,9 +383,9 @@ describe('the hierarchy end to end: Super Admin -> Kifle Ketema -> Kebele -> Sec
     const other = await db('users').where({ username: 'kebele.hirmata' }).first();
     await api('patch', `/api/users/${other.id}`, kj).send({ full_name: 'x' }).expect(404);
     await api('post', `/api/users/${other.id}/end-sessions`, kj).expect(404);
-    // Sector Administrators can be seen but not changed; neither can its own Kifle Ketema Administrator or a role it may not create
+    // the Sector Administrators are not its accounts: not even visible; nor can it create a role below or above its own level
     const sector = await db('users').where({ username: 'sector.con.jiren' }).first();
-    await api('patch', `/api/users/${sector.id}`, kj).send({ full_name: 'x' }).expect(403);
+    await api('patch', `/api/users/${sector.id}`, kj).send({ full_name: 'x' }).expect(404);
     const body = { full_name: 'New Person', password: 'Long-Enough-Pass-1', kebele_ids: [kebJiren.id] };
     await api('post', '/api/users', kj).send({ ...body, username: 'new.sector', role: 'SECTOR_ADMIN', sector_ids: [1] }).expect(403);
     await api('post', '/api/users', kj).send({ ...body, username: 'new.kifle', role: 'KIFLE_ADMIN' }).expect(403);
@@ -323,13 +404,12 @@ describe('the hierarchy end to end: Super Admin -> Kifle Ketema -> Kebele -> Sec
     await api('patch', `/api/users/${target.id}`, kj).send({ is_active: true }).expect(409);
   });
 
-  it('a Sector Administrator cannot manage users; the Super Administrator sees every account but manages only Kifle Ketema Administrators', async () => {
+  it('a Sector Administrator cannot manage users; the Super Administrator sees and manages only the accounts it creates', async () => {
     await api('get', '/api/users', as['sector.con.hirmata']).expect(403);
     const all = (await api('get', '/api/users', as.superadmin).expect(200)).body;
-    assert.equal(all.length, 187); // the 186 accounts plus new.keb
-    assert.deepEqual(all.filter((u) => !u.read_only).map((u) => u.role), ['KIFLE_ADMIN', 'KIFLE_ADMIN', 'KIFLE_ADMIN']);
+    assert.deepEqual(all.map((u) => [u.role, u.read_only]), [['KIFLE_ADMIN', false], ['KIFLE_ADMIN', false], ['KIFLE_ADMIN', false]]); // no specialists yet
     const kebele = await db('users').where({ username: 'kebele.hirmata' }).first();
-    await api('patch', `/api/users/${kebele.id}`, as.superadmin).send({ full_name: 'x' }).expect(403);
+    await api('patch', `/api/users/${kebele.id}`, as.superadmin).send({ full_name: 'x' }).expect(404);
     await api('post', '/api/users', as.superadmin).send({ username: 'late.kebele', full_name: 'x', password: 'Long-Enough-Pass-1', role: 'KEBELE_ADMIN', kebele_ids: [kebHirmata.id] }).expect(403);
     await api('post', '/api/users', as.superadmin).send({ username: 'late.sector', full_name: 'x', password: 'Long-Enough-Pass-1', role: 'SECTOR_ADMIN', kebele_ids: [kebHirmata.id], sector_ids: [1] }).expect(403);
   });
@@ -361,8 +441,8 @@ describe('the hierarchy end to end: Super Admin -> Kifle Ketema -> Kebele -> Sec
     await api('patch', `/api/users/${made.body.id}`, as.superadmin).send({ is_active: true }).expect(409);
   });
 
-  it('the Super Administrator creates the Internal Auditor (city-wide), and the Financial Officers and Inspectors of one or more Kifle Ketemas', async () => {
-    const body = { full_name: 'Specialist', password: 'Long-Enough-Pass-1', kifle_ketema_ids: [hirmata.id], kebele_ids: [kebHirmata.id], sector_ids: [1] };
+  it('the Super Administrator creates the Internal Auditor (city-wide), and one Financial Officer and one Inspector per Kifle Ketema', async () => {
+    const body = { full_name: 'Specialist Officer', password: 'Long-Enough-Pass-1', kifle_ketema_ids: [hirmata.id], kebele_ids: [kebHirmata.id], sector_ids: [1] };
     const roles = ['AUDITOR', 'FINANCIAL_OFFICER', 'INSPECTOR'];
     // nobody below the Super Administrator may create them
     for (const role of roles) {
@@ -377,30 +457,47 @@ describe('the hierarchy end to end: Super Admin -> Kifle Ketema -> Kebele -> Sec
     await api('patch', `/api/users/${auditor.body.id}`, as.superadmin).send({ is_active: false }).expect(200);
     await api('post', '/api/users', as.superadmin).send({ ...body, username: 'second.auditor', role: 'AUDITOR' }).expect(201);
     await api('patch', `/api/users/${auditor.body.id}`, as.superadmin).send({ is_active: true }).expect(409);
-    // a Financial Officer and an Inspector cover whole Kifle Ketemas: at least one, and no Kebele or sector of their own
+    // a Financial Officer and an Inspector each cover exactly one whole Kifle Ketema, with no Kebele or sector of their own
     for (const role of ['FINANCIAL_OFFICER', 'INSPECTOR']) {
-      const none = await api('post', '/api/users', as.superadmin).send({ ...body, username: `none.${role}`, role, kifle_ketema_ids: [] }).expect(400);
-      assert.ok(none.body.details.kifle_ketema_ids);
+      for (const kifle of [[], [jirenKifle.id, hirmata.id]]) {
+        const bad = await api('post', '/api/users', as.superadmin).send({ ...body, username: `bad.${role}`, role, kifle_ketema_ids: kifle }).expect(400);
+        assert.ok(bad.body.details.kifle_ketema_ids);
+      }
     }
-    const finance = await api('post', '/api/users', as.superadmin).send({ ...body, username: 'finance.jh', role: 'FINANCIAL_OFFICER', kifle_ketema_ids: [jirenKifle.id, hirmata.id] }).expect(201);
-    assert.deepEqual([[...finance.body.kifle_ketema_ids].sort(), finance.body.kebele_ids, finance.body.sector_ids], [[jirenKifle.id, hirmata.id].sort(), [], []]);
+    const finance = await api('post', '/api/users', as.superadmin).send({ ...body, username: 'finance.jh', role: 'FINANCIAL_OFFICER', kifle_ketema_ids: [jirenKifle.id] }).expect(201);
+    assert.deepEqual([finance.body.kifle_ketema_ids, finance.body.kebele_ids, finance.body.sector_ids], [[jirenKifle.id], [], []]);
     const inspector = await api('post', '/api/users', as.superadmin).send({ ...body, username: 'inspector.gibe', role: 'INSPECTOR', kifle_ketema_ids: [gibe.id] }).expect(201);
     assert.deepEqual(inspector.body.kifle_ketema_ids, [gibe.id]);
-    // unlike the Internal Auditor, there can be several of them (e.g. one per Kifle Ketema)
+    // one of each per Kifle Ketema: a second waits until the first is deactivated, and cannot come back beside the new one
+    const twice = await api('post', '/api/users', as.superadmin).send({ ...body, username: 'finance.jiren2', role: 'FINANCIAL_OFFICER', kifle_ketema_ids: [jirenKifle.id] }).expect(409);
+    assert.match(twice.body.error, /already has a Financial Officer: finance.jh/);
+    await api('post', '/api/users', as.superadmin).send({ ...body, username: 'inspector.gibe2', role: 'INSPECTOR', kifle_ketema_ids: [gibe.id] }).expect(409);
     await api('post', '/api/users', as.superadmin).send({ ...body, username: 'finance.gibe', role: 'FINANCIAL_OFFICER', kifle_ketema_ids: [gibe.id] }).expect(201);
-    // the Super Administrator manages all three; the levels below do not even see them
+    // moving an officer onto a Kifle Ketema that has one is refused too
+    const gibeFinance = await db('users').where({ username: 'finance.gibe' }).first();
+    await api('patch', `/api/users/${gibeFinance.id}`, as.superadmin).send({ kifle_ketema_ids: [jirenKifle.id] }).expect(409);
+    // the Super Administrator manages all three; a Kifle Ketema Administrator does not see them: they are not its accounts
+    // (the Financial Officer's monthly report still comes to it)
     const listed = (await api('get', '/api/users', as.superadmin).expect(200)).body.filter((u) => roles.includes(u.role));
     assert.deepEqual(listed.map((u) => [u.username, u.read_only]).sort(), [
       ['city.auditor', false], ['finance.gibe', false], ['finance.jh', false], ['inspector.gibe', false], ['second.auditor', false],
     ]);
-    const kifleList = (await api('get', '/api/users', as['kifle.jiren']).expect(200)).body;
-    assert.ok(!kifleList.some((u) => roles.includes(u.role)));
+    const kifleList = (await api('get', '/api/users', as['kifle.jiren']).expect(200)).body.filter((u) => roles.includes(u.role));
+    assert.deepEqual(kifleList, []);
+    await api('patch', `/api/users/${finance.body.id}`, as['kifle.jiren']).send({ full_name: 'x' }).expect(404);
+    await api('get', `/api/users/${finance.body.id}`, as['kifle.gibe']).expect(404); // not its Kifle Ketema
     // each does its own job only
     const cat = await db('asset_categories').first();
     const asset = { name: 'x', category_id: cat.id, sector_id: 1, kebele_id: kebJiren.id };
     for (const username of ['second.auditor', 'finance.jh', 'inspector.gibe']) {
       const who = await login(username);
-      await api('get', '/api/users', who).expect(403);
+      if (username === 'second.auditor') {
+        // the Internal Auditor checks who holds which account: it sees them all, and changes none
+        assert.ok((await api('get', '/api/users', who).expect(200)).body.every((u) => u.read_only));
+        await api('post', '/api/users', who).send({ ...body, username: 'by.auditor', role: 'SECTOR_ADMIN' }).expect(403);
+      } else {
+        await api('get', '/api/users', who).expect(403);
+      }
       await api('post', '/api/assets', who).send(asset).expect(403);
       await api('get', '/api/assets', who).expect(200);
     }
@@ -429,7 +526,7 @@ describe('the hierarchy end to end: Super Admin -> Kifle Ketema -> Kebele -> Sec
   it('one Sector Administrator per sector in a Kebele, exactly one sector and one Kebele each', async () => {
     const kh = as['kebele.hirmata'];
     const sector = await db('sectors').where({ code: 'CON' }).first();
-    const body = { username: 'dup.sector', full_name: 'Dup', password: 'Long-Enough-Pass-1', role: 'SECTOR_ADMIN' };
+    const body = { username: 'dup.sector', full_name: 'Dup Person', password: 'Long-Enough-Pass-1', role: 'SECTOR_ADMIN' };
     await api('post', '/api/users', kh).send({ ...body, sector_ids: [sector.id], kebele_ids: [kebJiren.id] }).expect(403); // not its Kebele
     await api('post', '/api/users', kh).send({ ...body, sector_ids: [sector.id], kebele_ids: [kebHirmata.id, kebJiren.id] }).expect(403);
     const none = await api('post', '/api/users', kh).send({ ...body, kebele_ids: [kebHirmata.id] }).expect(400);
@@ -532,13 +629,12 @@ describe('the hierarchy end to end: Super Admin -> Kifle Ketema -> Kebele -> Sec
     await api('post', `/api/assets/${made.id}/inspections`, inspector).send(visit).expect(201);
     await api('post', `/api/assets/${made.id}/follow-ups`, sa).send({ description: 'Repair the drum' }).expect(201);
 
-    // the Kifle Ketema Administrator sees the Inspectors of its Kifle Ketema and their history, and does not change them
+    // the Inspector's account is the Super Administrator's: the Kifle Ketema Administrator does not see it among its
+    // accounts, and follows the Inspector's work on its dashboard instead
     const kg = as['kifle.gibe'];
-    const listed = (await api('get', '/api/users', kg).expect(200)).body.find((u) => u.username === 'inspector.gibe');
-    assert.equal(listed?.read_only, true);
-    await api('patch', `/api/users/${inspector.id}`, kg).send({ full_name: 'x' }).expect(403);
-    await api('get', `/api/users/${inspector.id}/history`, kg).expect(200);
-    await api('get', `/api/users/${inspector.id}`, as['kifle.jiren']).expect(404); // not its Kifle Ketema
+    assert.equal((await api('get', '/api/users', kg).expect(200)).body.find((u) => u.username === 'inspector.gibe'), undefined);
+    await api('patch', `/api/users/${inspector.id}`, kg).send({ full_name: 'x' }).expect(404);
+    await api('get', `/api/users/${inspector.id}/history`, kg).expect(404);
 
     // ... with their work, what is overdue, and the Kifle Ketemas no Inspector covers
     const board = (await api('get', '/api/dashboard/inspectors', kg).expect(200)).body;

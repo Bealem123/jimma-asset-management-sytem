@@ -1,4 +1,4 @@
-import { Fragment, Suspense, lazy, useCallback, useEffect, useState } from 'react';
+import { Fragment, Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import { Navigate, NavLink, Route, Routes, Link, useLocation, useNavigate } from 'react-router-dom';
 import { api } from './api.js';
 import { useAuth } from './auth.jsx';
@@ -7,7 +7,8 @@ import { can } from './permissions.js';
 import { label } from './format.js';
 import { areaOf } from './area.js';
 import { clearFailed, syncOutbox, useOutbox } from './offline.js';
-import { Alert, Loading } from './components/ui.jsx';
+import { Alert, ConfirmDialog, Loading } from './components/ui.jsx';
+import Assistant from './components/Assistant.jsx';
 import Login from './pages/Login.jsx';
 import ChoosePassword from './pages/ChoosePassword.jsx';
 import LanguageSwitcher from './components/LanguageSwitcher.jsx';
@@ -17,6 +18,7 @@ import Dashboard from './pages/Dashboard.jsx';
 import AssetList from './pages/AssetList.jsx';
 import AssetForm from './pages/AssetForm.jsx';
 import AssetDetail from './pages/AssetDetail.jsx';
+import AssetHistory from './pages/AssetHistory.jsx';
 import Approvals from './pages/Approvals.jsx';
 import Reservations from './pages/Reservations.jsx';
 import ImportPage from './pages/ImportPage.jsx';
@@ -25,6 +27,7 @@ import Notifications from './pages/Notifications.jsx';
 import Audit from './pages/Audit.jsx';
 import MasterData from './pages/MasterData.jsx';
 import Users from './pages/Users.jsx';
+import UserNew from './pages/UserNew.jsx';
 import Account from './pages/Account.jsx';
 import { t } from './i18n.jsx';
 
@@ -35,6 +38,7 @@ const MapPage = lazy(() => import('./pages/MapPage.jsx'));
 const Labels = lazy(() => import('./pages/Labels.jsx'));
 const Analytics = lazy(() => import('./pages/Analytics.jsx'));
 const Performance = lazy(() => import('./pages/Performance.jsx'));
+const UserEdit = lazy(() => import('./pages/UserEdit.jsx'));
 const UserHistory = lazy(() => import('./pages/UserHistory.jsx'));
 const System = lazy(() => import('./pages/System.jsx'));
 const Verification = lazy(() => import('./pages/Verification.jsx'));
@@ -42,7 +46,7 @@ const VerificationDetail = lazy(() => import('./pages/Verification.jsx').then((m
 const MonthlyReports = lazy(() => import('./pages/MonthlyReports.jsx'));
 const MonthlyReportPage = lazy(() => import('./pages/MonthlyReports.jsx').then((m) => ({ default: m.MonthlyReportPage })));
 const PrepareReportPage = lazy(() => import('./pages/MonthlyReports.jsx').then((m) => ({ default: m.PrepareReportPage })));
-const Landing = lazy(() => import('./pages/Landing.jsx'));
+const Finance = lazy(() => import('./pages/Finance.jsx'));
 
 /** Shows what is waiting on this device, and whether the connection is down. */
 function OutboxBanner() {
@@ -77,17 +81,18 @@ const NAV = {
   assets: { to: '/assets', icon: 'assets', text: 'Assets' },
   map: { to: '/map', icon: 'map', text: 'Map' },
   scan: { to: '/scan', icon: 'scan', text: 'Scan QR code' },
-  approvals: { to: '/approvals', icon: 'approvals', text: 'Approvals', badge: 'approvals', show: (u) => can.review(u) || can.approve(u) || can.decide(u) || can.request(u) || can.oversee(u) },
+  approvals: { to: '/approvals', icon: 'approvals', text: 'Approvals', badge: 'approvals', show: can.openApprovals },
   reservations: { to: '/reservations', icon: 'reservations', text: 'Reservations', show: can.reserve },
-  verification: { to: '/verification', icon: 'verification', text: 'Verification', badge: 'verification', show: (u) => can.verify(u) || can.oversee(u) },
+  verification: { to: '/verification', icon: 'verification', text: 'Verification', badge: 'verification', show: (u) => can.viewVerification(u) },
   followups: { to: '/follow-ups', icon: 'followups', text: 'Follow-ups' },
   monthly: { to: '/monthly-reports', icon: 'monthly', text: 'Monthly reports', badge: 'monthly', show: can.monthly },
   performance: { to: '/performance', icon: 'performance', text: 'Performance by area', show: can.analytics },
   analytics: { to: '/analytics', icon: 'analytics', text: 'Analytics', show: can.analytics },
+  finance: { to: '/finance', icon: 'coin', text: 'Financial management', show: (u) => can.financial(u) },
   import: { to: '/import', icon: 'import', text: 'Import assets', show: can.importAssets },
   audit: { to: '/audit', icon: 'audit', text: 'Audit log', show: can.viewAudit },
   master: { to: '/master', icon: 'master', text: 'Master data', show: can.manageMaster },
-  users: { to: '/users', icon: 'users', text: 'Users', show: can.openUsers },
+  users: { to: '/users', icon: 'users', text: 'Users', show: can.viewUsers },
   system: { to: '/system', icon: 'system', text: 'System', show: can.manageSystem },
 };
 
@@ -97,20 +102,20 @@ const MENUS = {
     [null, ['dashboard', 'monthly', 'performance', 'analytics']],
     ['Explore', ['map', 'assets']],
   ],
-  SUPER_ADMIN: [ // runs the system
+  SUPER_ADMIN: [ // runs the system; approvals, verification and analytics belong to the levels that do that work
     [null, ['dashboard']],
     ['Administration', ['users', 'master', 'system', 'audit']],
-    ['Monitoring', ['approvals', 'verification', 'monthly', 'performance', 'analytics']],
+    ['Monitoring', ['monthly']], // whether each level sends its report (the status only): is the system being used?
     ['Explore', ['assets', 'map']],
   ],
   KIFLE_ADMIN: [ // approves
     [null, ['dashboard']],
     ['Your work', ['approvals', 'verification', 'monthly', ['users', 'Kebele Administrators']]],
-    ['Oversight', ['performance', 'assets', 'map', 'analytics']],
+    ['Oversight', ['performance', 'assets', 'map', 'analytics', ['finance', 'Finances (read-only)']]],
   ],
   KEBELE_ADMIN: [ // verifies in the field
     [null, ['dashboard']],
-    ['Your work', ['verification', 'scan', ['approvals', 'Verify registrations'], 'followups', 'monthly']],
+    ['Your work', [['approvals', 'Registrations and requests'], 'verification', 'scan', 'followups', 'monthly']],
     ['Your Kebele', ['assets', 'map', 'reservations', ['users', 'Sector Administrators'], 'performance', 'analytics']],
   ],
   SECTOR_ADMIN: [ // registers and maintains
@@ -120,12 +125,12 @@ const MENUS = {
   ],
   AUDITOR: [ // checks the records independently; changes nothing
     [null, ['dashboard']],
-    ['Your work', ['audit', 'monthly', 'analytics', 'performance']],
-    ['Explore', ['assets', 'map']],
+    ['Your work', ['audit', 'monthly', ['finance', 'Finances (read-only)'], 'analytics', 'performance']],
+    ['Explore', ['assets', ['verification', 'Verification (read-only)'], ['users', 'User accounts (read-only)'], 'map']],
   ],
   FINANCIAL_OFFICER: [ // values and income of its Kifle Ketemas
     [null, ['dashboard']],
-    ['Your work', ['assets', 'monthly', 'analytics']],
+    ['Financial Work', [['finance', 'Financial management'], ['assets', 'Valued assets'], 'monthly', 'analytics']],
     ['Explore', ['performance', 'map']],
   ],
   INSPECTOR: [ // inspects in the field
@@ -196,6 +201,30 @@ function Shell() {
   const [collapsed, setCollapsed] = useCollapsed();
   const [query, setQuery] = useState('');
   const [queue, setQueue] = useState({});
+  const [confirmSignout, setConfirmSignout] = useState(false);
+  const openBtn = useRef(null);
+  const closeBtn = useRef(null);
+
+  // Phones: the menu is a drawer that slides in from the left (styles.css). While it is open the page behind it does not
+  // scroll, Escape or a tap beside it closes it, and the focus moves into it and back to the menu button afterwards.
+  const closeMenu = useCallback(() => { setOpen(false); openBtn.current?.focus(); }, []);
+  useEffect(() => { setOpen(false); }, [location.pathname]);
+  useEffect(() => {
+    if (!open) return undefined;
+    const wide = window.matchMedia('(min-width: 721px)');
+    const onKey = (e) => { if (e.key === 'Escape') closeMenu(); };
+    const onWide = () => { if (wide.matches) setOpen(false); };
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    closeBtn.current?.focus();
+    window.addEventListener('keydown', onKey);
+    wide.addEventListener('change', onWide);
+    return () => {
+      document.body.style.overflow = overflow;
+      window.removeEventListener('keydown', onKey);
+      wide.removeEventListener('change', onWide);
+    };
+  }, [open, closeMenu]);
 
   const refreshUnread = useCallback(() => {
     api.get('/notifications/count').then((r) => setUnread(r.unread)).catch(() => {});
@@ -219,7 +248,7 @@ function Shell() {
   return (
     <div className={`app${collapsed ? ' collapsed' : ''}`}>
       <a className="skip" href="#main">{t('Skip to content')}</a>
-      <aside className={`sidebar${open ? ' open' : ''}`}>
+      <aside id="sidebar" className={`sidebar${open ? ' open' : ''}`} aria-label={t('Menu')}>
         <div className="sidebar-head">
           <Link to="/" className="brand">
             <img className="brand-mark" src="/brand/logo-256.png" alt="" aria-hidden="true" />
@@ -228,7 +257,9 @@ function Shell() {
           <button type="button" className="icon-btn collapse-btn" aria-label={collapsed ? t('Expand menu') : t('Collapse menu')} title={collapsed ? t('Expand menu') : t('Collapse menu')} onClick={() => setCollapsed()}>
             <NavIcon name="collapse" />
           </button>
-          <button type="button" className="btn menu-toggle" aria-expanded={open} aria-controls="sidebar-nav" onClick={() => setOpen(!open)}>{t('Menu')}</button>
+          <button type="button" ref={closeBtn} className="icon-btn drawer-close" aria-label={t('Close')} title={t('Close')} onClick={closeMenu}>
+            <NavIcon name="close" />
+          </button>
         </div>
         <nav id="sidebar-nav" className="nav nav-main" aria-label={t('Main')} onClick={() => setOpen(false)}>
           {menuFor(user).map(([heading, items]) => (
@@ -250,11 +281,32 @@ function Shell() {
         </nav>
         <nav className="nav side-foot" aria-label={t('Account')} onClick={() => setOpen(false)}>
           <NavLink to="/account"><NavIcon name="account" /><span className="nav-text">{t('My account')}</span></NavLink>
-          <button type="button" className="nav-button nav-signout" onClick={() => logout()}><NavIcon name="logout" /><span className="nav-text">{t('Sign out')}</span></button>
+          <button type="button" className="nav-button nav-signout" onClick={() => setConfirmSignout(true)}><NavIcon name="logout" /><span className="nav-text">{t('Sign out')}</span></button>
         </nav>
       </aside>
+      {confirmSignout && (
+        <ConfirmDialog
+          title="Are you leaving?"
+          message={t('Are you sure you want to sign out of the Jimma City Asset Management System? Any unsaved changes may be lost.')}
+          confirmLabel="Sign out"
+          danger
+          onClose={() => setConfirmSignout(false)}
+          onConfirm={() => {
+            setConfirmSignout(false);
+            logout();
+          }}
+        />
+      )}
+      <div className={`drawer-backdrop${open ? ' open' : ''}`} aria-hidden="true" onClick={closeMenu} />
       <div className="content">
         <header className="topbar">
+          <button
+            type="button" ref={openBtn} className="round-btn drawer-open" aria-label={t('Menu')} title={t('Menu')}
+            aria-controls="sidebar" aria-expanded={open} onClick={() => setOpen(true)}
+          >
+            <NavIcon name="menu" />
+          </button>
+          <Link to="/" className="top-brand"><img src="/brand/logo-256.png" alt="" /><span>{t('Jimma City')}</span></Link>
           <Link to="/account" className="who" title={t('My account')}>
             <Avatar user={user} />
             <span className="who-text" title={[label(user.role), areaOf(user, lookups)].filter(Boolean).join(' · ')}>
@@ -287,26 +339,30 @@ function Shell() {
               <Route path="/assets/new" element={can.create(user) ? <AssetForm /> : <Navigate to="/assets" replace />} />
               <Route path="/assets/:id" element={<AssetDetail />} />
               <Route path="/assets/:id/edit" element={<AssetForm />} />
+              <Route path="/assets/:id/history" element={<AssetHistory />} />
               <Route path="/map" element={<MapPage />} />
               <Route path="/scan" element={<Scan />} />
               <Route path="/scan/:code" element={<Scan />} />
               <Route path="/labels" element={<Labels />} />
-              <Route path="/approvals" element={can.review(user) || can.approve(user) || can.decide(user) || can.request(user) || can.oversee(user) ? <Approvals /> : <Navigate to="/" replace />} />
+              <Route path="/approvals" element={can.openApprovals(user) ? <Approvals /> : <Navigate to="/" replace />} />
               <Route path="/reservations" element={can.reserve(user) ? <Reservations /> : <Navigate to="/" replace />} />
-              <Route path="/verification" element={can.verify(user) || can.oversee(user) ? <Verification /> : <Navigate to="/" replace />} />
-              <Route path="/verification/:id" element={can.verify(user) || can.oversee(user) ? <VerificationDetail /> : <Navigate to="/" replace />} />
+              <Route path="/verification" element={can.viewVerification(user) ? <Verification /> : <Navigate to="/" replace />} />
+              <Route path="/verification/:id" element={can.viewVerification(user) ? <VerificationDetail /> : <Navigate to="/" replace />} />
               <Route path="/follow-ups" element={<FollowUps />} />
               <Route path="/monthly-reports" element={can.monthly(user) ? <MonthlyReports /> : <Navigate to="/" replace />} />
               <Route path="/monthly-reports/report/:id" element={can.monthly(user) ? <MonthlyReportPage /> : <Navigate to="/" replace />} />
               <Route path="/monthly-reports/prepare/:periodKey" element={can.monthly(user) ? <PrepareReportPage /> : <Navigate to="/" replace />} />
               <Route path="/notifications" element={<Notifications onChange={refreshUnread} />} />
+              <Route path="/finance" element={can.financial(user) ? <Finance /> : <Navigate to="/" replace />} />
               <Route path="/import" element={can.importAssets(user) ? <ImportPage /> : <Navigate to="/" replace />} />
               <Route path="/analytics" element={can.analytics(user) ? <Analytics /> : <Navigate to="/" replace />} />
               <Route path="/performance" element={can.analytics(user) ? <Performance /> : <Navigate to="/" replace />} />
               <Route path="/audit" element={can.viewAudit(user) ? <Audit /> : <Navigate to="/" replace />} />
               <Route path="/master" element={can.manageMaster(user) ? <MasterData /> : <Navigate to="/" replace />} />
-              <Route path="/users" element={can.openUsers(user) ? <Users /> : <Navigate to="/" replace />} />
-              <Route path="/users/:id/history" element={can.openUsers(user) ? <UserHistory /> : <Navigate to="/" replace />} />
+              <Route path="/users" element={can.viewUsers(user) ? <Users /> : <Navigate to="/" replace />} />
+              <Route path="/users/new" element={can.openUsers(user) ? <UserNew /> : <Navigate to="/users" replace />} />
+              <Route path="/users/:id/edit" element={can.openUsers(user) ? <UserEdit /> : <Navigate to="/users" replace />} />
+              <Route path="/users/:id/history" element={can.viewUsers(user) ? <UserHistory /> : <Navigate to="/" replace />} />
               <Route path="/system" element={can.manageSystem(user) ? <System /> : <Navigate to="/" replace />} />
               <Route path="/account" element={<Account />} />
               <Route path="/login" element={<Navigate to="/" replace />} />
@@ -316,16 +372,15 @@ function Shell() {
           )}
         </main>
         <footer className="footer">{t('Jimma City Administration · Smart Asset Management System · working draft')}</footer>
+        <Assistant />
       </div>
     </div>
   );
 }
 
-/** Not signed in: the public front page at the root address, the sign-in form everywhere else (deep links ask to sign in). */
+/** Not signed in: the sign-in form at every address (deep links ask to sign in). The City portal is the public front page. */
 function Public() {
-  const location = useLocation();
-  if (location.pathname !== '/') return <Login />;
-  return <Suspense fallback={<div className="login"><Loading /></div>}><Landing /></Suspense>;
+  return <Login />;
 }
 
 export default function App() {

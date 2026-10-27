@@ -28,115 +28,69 @@ const PHOTOS = {
   closing: '/landing/closing.jpg',
 };
 const photo = (key) => ({ '--photo': `url(${PHOTOS[key]})` });
+/** The whole photo, uncropped: shown under the text on screens too narrow for the panel's full-bleed photo (landing.css). */
+const WholePhoto = () => <div className="lp-photo" aria-hidden="true" />;
 
-// The hero film: "Jimma Zone in Transformation" by the Office of the Prime Minister of Ethiopia, played by YouTube's own
-// (privacy-enhanced) player, muted, behind the headline. Only seconds 12-26 loop: night aerials of the city (fountains,
-// street lamps, the skyline) between the film's two title cards ("Corridors Development" at ~10 s, "Abajifar Palace
-// Renovated" at ~28 s), which would clash with the headline. Change `start`/`end` (seconds) to loop another stretch.
-const HERO_VIDEO = { id: 'pgjORbFCwVo', title: 'Jimma Zone in Transformation', start: 12, end: 26 };
-
-const YOUTUBE = 'https://www.youtube-nocookie.com';
-
-const PREPARE = 4.5; // seconds before the end of the loop that the hidden player starts, so its icon has gone by the switch
-const ICON = 3500; // ms: YouTube shows its own pause button for about 3 s whenever a player starts or jumps
+// Transformed Jimma City night scenes extracted directly from the official transformation video in high quality
+const HERO_SLIDES = [
+  {
+    src: '/landing/hero-corridor-night.jpg',
+    title: 'Jimma City Transformed Corridor Boulevard',
+  },
+  {
+    src: '/landing/hero-city-aerial.jpg',
+    title: 'Modern Municipal Assets and Night Skyline',
+  },
+  {
+    src: '/landing/hero-lamp-overlook.jpg',
+    title: 'Iconic Lotus Streetlamp and Avenue',
+  },
+  {
+    src: '/landing/hero-fountain-night.jpg',
+    title: 'Illuminated Central Fountain and Waterfront Park',
+  },
+  {
+    src: '/landing/hero-monument-aerial.jpg',
+    title: 'Jimma City Center Roundabout and Public Infrastructure',
+  },
+];
 
 /**
- * The film fades in only once YouTube's player reports that it is really playing, so its loading spinner or an error
- * screen is never seen. The hero photo (or its gradient) stays underneath, and is all that shows without a
- * connection, with "reduced motion" or "data saver" switched on, or whenever the film cannot play.
- *
- * Seamless loop: YouTube shows its pause button for ~3 s every time a player starts or jumps back. So two players take
- * turns: while one is shown, the other starts the loop hidden, PREPARE seconds early; at the end of the stretch they
- * cross-fade and the one that was shown pauses. If the hidden one is not ready in time, the shown one simply jumps back.
+ * Self-moving, best-quality hero slideshow extracted from the city transformation film.
+ * Subtle Ken-Burns pan/zoom gives continuous gentle motion to the background,
+ * auto-advancing with a silky smooth cross-fade.
  */
-function HeroVideo() {
-  const frames = [useRef(null), useRef(null)];
-  const [wanted, setWanted] = useState(false);
-  const [revealed, setRevealed] = useState(false);
-  const [shown, setShown] = useState(0); // which of the two players is visible
+function HeroSlideshow() {
+  const [current, setCurrent] = useState(0);
+
   useEffect(() => {
-    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const saveData = navigator.connection?.saveData;
-    if (!reduce && !saveData && navigator.onLine !== false) setWanted(true);
+    const timer = setInterval(() => {
+      setCurrent((prev) => (prev + 1) % HERO_SLIDES.length);
+    }, 6000);
+    return () => clearInterval(timer);
   }, []);
-  useEffect(() => {
-    if (!wanted) return undefined;
-    const { start, end } = HERO_VIDEO;
-    // the YouTube player API over postMessage: say we are listening, then follow each player's state and time
-    const post = (i, msg) => frames[i].current?.contentWindow?.postMessage(JSON.stringify(msg), YOUTUBE);
-    const command = (i, func, args = []) => post(i, { event: 'command', func, args });
-    const heard = [false, false];
-    const hello = setInterval(() => [0, 1].forEach((i) => { if (!heard[i]) post(i, { event: 'listening', id: `hero${i}`, channel: 'widget' }); }), 700);
-    const players = [{ state: -1, time: 0 }, { state: -1, time: 0 }];
-    let active = 0;
-    let preparing = false;
-    let revealing = false;
-    let warmed = false;
-    const timers = [];
-    const later = (fn, ms) => timers.push(setTimeout(fn, ms));
 
-    const onMessage = (e) => {
-      if (e.origin !== YOUTUBE) return;
-      const i = frames.findIndex((f) => f.current?.contentWindow === e.source);
-      if (i < 0) return;
-      let d;
-      try { d = typeof e.data === 'string' ? JSON.parse(e.data) : e.data; } catch { return; }
-      heard[i] = true;
-      const p = players[i];
-      const state = d?.event === 'onStateChange' ? d.info : d?.info?.playerState;
-      if (typeof state === 'number') p.state = state;
-      if (typeof d?.info?.currentTime === 'number') p.time = d.info.currentTime;
-      const other = 1 - active;
-      if (i !== active) {
-        // warm-up: the hidden player loads the film once, then waits paused until its turn
-        if (!warmed && p.state === 1 && !preparing) { warmed = true; command(i, 'pauseVideo'); }
-        return;
-      }
-
-      if (p.state === 1 && !revealing) {
-        revealing = true;
-        later(() => setRevealed(true), ICON); // after the first start's icon has gone
-        command(other, 'playVideo'); // warm the other player up
-      }
-      if (p.time >= end - PREPARE && !preparing) {
-        preparing = true;
-        command(other, 'seekTo', [start, true]);
-        command(other, 'playVideo');
-      }
-      if (p.time >= end - 0.4 || p.state === 0) {
-        const o = players[other];
-        if (o.state === 1 && o.time >= start + ICON / 1000 - 0.5) {
-          // cross-fade to the player that started early, then pause this one once it is hidden
-          const old = active;
-          active = other;
-          preparing = false;
-          setShown(other);
-          later(() => command(old, 'pauseVideo'), 1600);
-        } else {
-          command(active, 'seekTo', [start, true]); // fallback: jump back (the icon shows briefly)
-          if (p.state !== 1) command(active, 'playVideo');
-          preparing = false;
-        }
-      }
-    };
-    window.addEventListener('message', onMessage);
-    return () => { clearInterval(hello); timers.forEach(clearTimeout); window.removeEventListener('message', onMessage); };
-  }, [wanted]);
-  if (!wanted) return null;
-  const { id, start } = HERO_VIDEO;
-  const src = (autoplay) => `${YOUTUBE}/embed/${id}?${new URLSearchParams({
-    autoplay, mute: '1', start: String(start), enablejsapi: '1', origin: window.location.origin,
-    controls: '0', disablekb: '1', playsinline: '1', rel: '0', modestbranding: '1', iv_load_policy: '3',
-  })}`;
   return (
-    <div className={`lp-video${revealed ? ' is-on' : ''}`} aria-hidden="true">
-      {[0, 1].map((i) => (
-        <iframe
-          key={i} ref={frames[i]} src={src(i === 0 ? '1' : '0')} title={HERO_VIDEO.title} tabIndex={-1}
-          className={shown === i ? 'is-shown' : undefined}
-          allow="autoplay; encrypted-media; picture-in-picture" referrerPolicy="strict-origin-when-cross-origin"
+    <div className="lp-hero-slideshow" aria-hidden="true">
+      {HERO_SLIDES.map((slide, idx) => (
+        <div
+          key={slide.src}
+          className={`lp-hero-slide ${idx === current ? 'is-active' : ''}`}
+          style={{ backgroundImage: `url(${slide.src})` }}
         />
       ))}
+      <div className="lp-hero-dots">
+        {HERO_SLIDES.map((_, idx) => (
+          <button
+            key={idx}
+            type="button"
+            className={`lp-hero-dot ${idx === current ? 'is-active' : ''}`}
+            onClick={() => setCurrent(idx)}
+            aria-label={`Go to slide ${idx + 1}`}
+            tabIndex={-1}
+          />
+        ))}
+      </div>
     </div>
   );
 }
@@ -161,9 +115,9 @@ const FEATURES = [
 ];
 
 const LEVELS = [
-  { id: 'mayor', title: "Mayor's office", tags: ['Whole city', 'Reports', 'Analytics'], text: 'The City at a glance: where its assets stand, which area is falling behind, and the confirmed monthly reports of the Kifle Ketemas.' },
+  { id: 'mayor', title: 'Lemat Trufat', tags: ['PM Dr. Abiy Ahmed', 'Avocado', 'Food security'], text: 'Prime Minister Dr. Abiy Ahmed visits Lemat Trufat and sees crates of avocados being sorted for market. Every crate, store and vehicle behind this work is a public asset the system keeps on record.' },
   { id: 'kifle', title: 'Kifle Ketema', tags: ['Approval', 'Inspectors', 'Jiren · Hirmata · Gibe'], text: 'Approves registrations, transfers and disposals, and follows the Inspectors and Financial Officers of its area.' },
-  { id: 'kebele', title: 'Kebele', tags: ['Site verification', 'QR scan', '13 Kebeles'], text: 'Confirms on site that each newly registered asset really exists where the register says, and runs physical verification.' },
+  { id: 'kebele', title: 'Jimma City Center', tags: ['Site verification', 'Streets & squares', '13 Kebeles'], text: 'From the roundabout monument to every street light, square and public building, the Kebele confirms on site that each asset really exists where the register says.' },
   { id: 'sector', title: 'Sector', tags: ['Registration', 'Maintenance', '13 sectors'], text: 'Registers the assets of its sector, keeps their records up to date and requests transfers, maintenance and disposals.' },
 ];
 
@@ -236,28 +190,51 @@ function useMotion(root) {
 
 export default function Landing() {
   const root = useRef(null);
+  const [menuOpen, setMenuOpen] = useState(false);
   useMotion(root);
+  // the menu panel closes with Escape, and by itself once the screen is wide enough to show the links in a row
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+    const wide = window.matchMedia('(min-width: 901px)');
+    const close = () => setMenuOpen(false);
+    const onKey = (e) => { if (e.key === 'Escape') close(); };
+    const onWide = () => { if (wide.matches) close(); };
+    window.addEventListener('keydown', onKey);
+    wide.addEventListener('change', onWide);
+    return () => { window.removeEventListener('keydown', onKey); wide.removeEventListener('change', onWide); };
+  }, [menuOpen]);
   const year = new Date().getFullYear();
   return (
     <div className="lp" ref={root} id="top">
-      <header className="lp-nav">
+      <header className={`lp-nav${menuOpen ? ' is-open' : ''}`}>
         <a className="lp-logo" href="#top">JIMMA <b>ASSETS</b></a>
-        <nav className="lp-links" aria-label={t('Main')}>
-          <a className="is-on" href="#top">{t('Home')}</a>
-          <a href="#features">{t('Features')}</a>
-          <a href="#about">{t('About')}</a>
-          <a href="#contact">{t('Contact')}</a>
+        {/* a row of links on large screens; a drop-down panel opened by the menu button on tablets and phones */}
+        <nav className="lp-links" id="lp-menu" aria-label={t('Main')}>
+          {/* closes the panel once a link is followed */}
+          <div className="lp-links-list" onClick={(e) => { if (e.target.closest('a')) setMenuOpen(false); }}>
+            <a className="is-on" href="#top">{t('Home')}</a>
+            <a href="#features">{t('Features')}</a>
+            <a href="#about">{t('About')}</a>
+            <a href="#contact">{t('Contact')}</a>
+          </div>
+          <LanguageSwitcher className="lp-lang lp-lang-menu" />
         </nav>
         <div className="lp-nav-end">
-          <LanguageSwitcher className="lp-lang" />
+          <LanguageSwitcher className="lp-lang lp-lang-bar" />
           <Link className="lp-pill lp-pill-light" to="/login">{t('Sign in')} <Arrow /></Link>
+          <button
+            type="button" className="lp-menu-btn" aria-controls="lp-menu" aria-expanded={menuOpen}
+            aria-label={t(menuOpen ? 'Close' : 'Menu')} onClick={() => setMenuOpen((o) => !o)}
+          >
+            <span aria-hidden="true" />
+          </button>
         </div>
       </header>
 
       <div className="lp-stack">
         {/* hero */}
         <section className="lp-panel lp-hero" style={photo('hero')}>
-          <HeroVideo />
+          <HeroSlideshow />
           <div className="lp-shade" />
           <Edges />
           <div className="lp-hero-text">
@@ -301,6 +278,7 @@ export default function Landing() {
                 <a className="lp-pill lp-pill-light" href="#levels">{t('How?')}</a>
               </div>
             </div>
+            <WholePhoto />
           </section>
         ))}
 
@@ -320,6 +298,7 @@ export default function Landing() {
                   <ul className="lp-tags">{l.tags.map((tag) => <li key={tag}>{t(tag)}</li>)}</ul>
                   <p>{t(l.text)}</p>
                 </div>
+                <WholePhoto />
               </article>
             ))}
           </div>
@@ -336,6 +315,7 @@ export default function Landing() {
               <Link className="lp-pill lp-pill-light" to="/login">{t('Sign in')} <Arrow /></Link>
             </div>
           </div>
+          <WholePhoto />
         </section>
       </div>
 

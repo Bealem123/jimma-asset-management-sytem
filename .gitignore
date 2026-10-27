@@ -1,8 +1,26 @@
 node_modules
-.env
-uploads
-uploads-test
 dist
+
+# local settings and secrets: only the example is shared
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# uploaded files of every copy of the system (uploads, uploads-test, uploads-insa ...)
+uploads
+uploads-*
+
+# backups and database dumps
 backups
-backups-test
+backups-*
+*.sql
+*.sql.gz
+*.dump
+
+# temporary passwords handed over to people (account provisioning, INSA test accounts)
 credentials
+
+# logs
+*.log

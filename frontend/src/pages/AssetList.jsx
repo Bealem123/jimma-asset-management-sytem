@@ -5,14 +5,15 @@ import { useAuth } from '../auth.jsx';
 import { useLookups } from '../lookups.jsx';
 import { can } from '../permissions.js';
 import { label } from '../format.js';
-import { Alert, Badge, Loading, PageHeader, Pagination, enumOpt, opt, useAsync } from '../components/ui.jsx';
+import { Alert, Badge, ConfirmDialog, Loading, PageHeader, Pagination, enumOpt, opt, useAsync } from '../components/ui.jsx';
 import { t } from '../i18n.jsx';
+import NavIcon from '../components/NavIcon.jsx';
 
 const FILTER_KEYS = [
   'q', 'category_id', 'asset_type_id', 'sector_id', 'kifle_ketema_id', 'kebele_id', 'status', 'condition', 'approval_state',
-  'ownership_type', 'revenue', 'serial_number', 'responsible', 'location', 'reservable', 'include_archived',
+  'ownership_type', 'revenue', 'serial_number', 'responsible', 'location', 'reservable', 'maintenance', 'include_archived',
 ];
-const MORE_KEYS = ['asset_type_id', 'ownership_type', 'serial_number', 'responsible', 'location', 'reservable', 'include_archived'];
+const MORE_KEYS = ['asset_type_id', 'ownership_type', 'serial_number', 'responsible', 'location', 'reservable', 'maintenance', 'include_archived'];
 const PAGE_SIZE = 25;
 
 function Select({ id, text, value, onChange, options }) {
@@ -42,12 +43,14 @@ export default function AssetList() {
   const [params, setParams] = useSearchParams();
   const [exportError, setExportError] = useState('');
   const [picked, setPicked] = useState(() => new Set());
+  const [deleting, setDeleting] = useState(null); // the draft whose deletion is being confirmed
+  const [flash, setFlash] = useState('');
   const page = Number(params.get('page') || 1);
   const filters = Object.fromEntries(FILTER_KEYS.map((k) => [k, params.get(k) || '']));
   const [more, setMore] = useState(() => MORE_KEYS.some((k) => params.get(k)));
   const query = qs({ ...filters, page, page_size: PAGE_SIZE });
 
-  const { data, error, loading } = useAsync(() => api.get(`/assets${query}`), [query]);
+  const { data, error, loading, reload } = useAsync(() => api.get(`/assets${query}`), [query]);
 
   const setFilter = (key, value) => {
     const next = new URLSearchParams(params);
@@ -105,6 +108,7 @@ export default function AssetList() {
           <Text id="f-res" text="Responsible person / office" value={filters.responsible} onChange={(v) => setFilter('responsible', v)} />
           <Text id="f-loc" text="Specific location" value={filters.location} onChange={(v) => setFilter('location', v)} />
           <Select id="f-rsv" text="Reservable" value={filters.reservable} onChange={(v) => setFilter('reservable', v)} options={[{ value: '', label: 'Any' }, { value: 'yes', label: 'Reservable only' }]} />
+          <Select id="f-mnt" text="Maintenance" value={filters.maintenance} onChange={(v) => setFilter('maintenance', v)} options={[{ value: '', label: 'Any' }, { value: 'due', label: 'Due within 30 days or overdue' }]} />
           <Select id="f-arc" text="Archived" value={filters.include_archived} onChange={(v) => setFilter('include_archived', v)} options={[{ value: '', label: 'Hide archived' }, { value: 'true', label: 'Include archived' }]} />
         </form>
       )}
@@ -117,6 +121,15 @@ export default function AssetList() {
         </div>
       )}
 
+      <Alert kind="success">{flash}</Alert>
+      {deleting && (
+        <ConfirmDialog
+          title="Delete draft" danger confirmLabel="Delete"
+          message={t('Delete the draft {code} ({name})? It was never sent for verification, so nobody else has seen it. Its photos and documents are deleted too. This cannot be undone.', { code: deleting.asset_code, name: deleting.name })}
+          onClose={() => setDeleting(null)}
+          onConfirm={async () => { await api.del(`/assets/${deleting.id}`); setFlash(t('Draft {code} deleted.', { code: deleting.asset_code })); setDeleting(null); reload(); }}
+        />
+      )}
       {loading && !data ? <Loading /> : error ? <Alert>{error}</Alert> : (
         <>
           <div className="table-wrap" aria-busy={loading}>
@@ -125,7 +138,7 @@ export default function AssetList() {
                 <tr>
                   <th><input type="checkbox" aria-label={t('Select all assets on this page')} checked={allOnPage}
                     onChange={() => setPicked((s) => { const n = new Set(s); rows.forEach((r) => (allOnPage ? n.delete(r.id) : n.add(r.id))); return n; })} /></th>
-                  <th>{t('Asset ID')}</th><th>{t('Name')}</th><th>{t('Category')}</th><th>{t('Sector')}</th><th>{t('Location')}</th><th>{t('Condition')}</th><th>{t('Status')}</th><th>{t('Approval')}</th><th>{t('Revenue')}</th>
+                  <th>{t('Asset ID')}</th><th>{t('Name')}</th><th>{t('Category')}</th><th>{t('Sector')}</th><th>{t('Location')}</th><th>{t('Condition')}</th><th>{t('Status')}</th><th>{t('Approval')}</th><th>{t('Revenue')}</th><th><span className="sr-only">{t('Actions')}</span></th>
                 </tr>
               </thead>
               <tbody>
@@ -141,6 +154,20 @@ export default function AssetList() {
                     <td><Badge value={a.status} /></td>
                     <td><Badge value={a.approval_state} /></td>
                     <td>{a.generates_revenue ? t('Yes') : <span className="muted">{t('No')}</span>}</td>
+                    <td>
+                      {/* view for everyone; edit where this person may change the record; delete only a draft of theirs never sent */}
+                      <div className="actions row-actions">
+                        <Link to={`/assets/${a.id}`} className="btn btn-small btn-icon-only" title={t('View')} aria-label={`${t('View')} ${a.asset_code}`}><NavIcon name="eye" /></Link>
+                        {can.edit(user) && a.status !== 'DISPOSED' && (
+                          <Link to={`/assets/${a.id}/edit`} className="btn btn-small btn-icon-only" title={t('Edit')} aria-label={`${t('Edit')} ${a.asset_code}`}><NavIcon name="edit" /></Link>
+                        )}
+                        {a.can_delete && (
+                          <button type="button" className="btn btn-small btn-cancel btn-icon-only" title={t('Delete draft')} aria-label={`${t('Delete draft')} ${a.asset_code}`} onClick={() => setDeleting(a)}>
+                            <NavIcon name="trash" />
+                          </button>
+                        )}
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>

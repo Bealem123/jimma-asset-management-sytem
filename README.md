@@ -77,7 +77,7 @@ The City uses **8 roles**: the 5 of the hierarchy, and 3 specialist roles beside
 | Kifle Ketema Administrator | Oversees its Kebeles; **approves and activates** registered assets and decides requests (does not register); **creates and manages the Kebele Administrators of its Kifle Ketema**; sees (not changes) the Sector Administrators there; **follows the Inspectors of its Kifle Ketema** (their accounts, their inspections, overdue inspections, and alerts when one is overdue) | One Kifle Ketema |
 | Kebele Administrator | Manages and monitors its Kebele; **verifies newly registered assets physically** (does not register); runs physical verification; reports missing, damaged, transferred or wrongly recorded assets; **creates and manages the Sector Administrators of its Kebele** | One Kebele |
 | Sector Administrator | Manages one sector inside one Kebele: **registers assets**, keeps their records, requests transfers/maintenance/disposal, acts on follow-ups, reservations, analytics. Does not verify, approve or inspect (it owns the assets, so the Inspector inspects them) | One sector in one Kebele |
-| Internal Auditor | Checks the records independently: read, analytics, money, **audit log**; sends its monthly report directly to the Mayor. Changes nothing. **One active account for the City**, replaced like the Mayor's | Whole city |
+| Internal Auditor | Checks the records independently: read, analytics, money, **audit log**, the stock-taking (verification) results and every user account with its history, all read-only; sends its monthly report directly to the Mayor. Changes nothing. **One active account for the City**, replaced like the Mayor's | Whole city |
 | Financial Officer | Money figures, **records valuations and income**; sends its monthly report to its Kifle Ketema Administrator | One or more Kifle Ketemas |
 | Inspector | **The only role that records inspections** (technical condition), and records verification results. Followed by the Kifle Ketema Administrator | One or more Kifle Ketemas |
 
@@ -85,7 +85,7 @@ The Super Administrator creates the specialist accounts (*Users → Auditors, fi
 
 These are the defaults; a Super Administrator can change them (System → Roles and permissions). A user with no assigned area sees nothing.
 
-### The 186 administrator accounts
+### The standard accounts: 186 administrators and 8 specialists
 
 ```
 SUPER ADMIN  ->  KIFLE KETEMA  ->  KEBELE  ->  SECTOR
@@ -100,17 +100,28 @@ SUPER ADMIN  ->  KIFLE KETEMA  ->  KEBELE  ->  SECTOR
 
 Total Sector Administrators = Kebeles × Sectors. It does not depend on how the Kebeles are shared between the Kifle Ketemas.
 
+Beside the hierarchy, the same command creates the specialist accounts, so every one of the 8 roles has an account:
+
+| Accounts | Role | Scope | Username |
+|---|---|---|---|
+| 1 | Mayor / Executive | Entire Jimma City | `mayor` |
+| 1 | Internal Auditor | Entire Jimma City | `auditor` |
+| 3 | Financial Officer | one per Kifle Ketema | `finance.<kifle ketema>` |
+| 3 | Inspector | one per Kifle Ketema | `inspector.<kifle ketema>` |
+
+That is 194 accounts on a new system. A Mayor or Internal Auditor is not created when the City already has an active one, and a Financial Officer or Inspector is not created for a Kifle Ketema that already has an active one.
+
 **Which Kebele belongs to which Kifle Ketema is data, not code.** The Super Administrator sets it in *Master data → Kebeles → Edit*, following the official city structure. The Kifle Ketemas may have different numbers of Kebeles. Until a Kebele is assigned, no asset can be registered in it. Moving a Kebele to another Kifle Ketema moves its assets with it, and a Kebele that holds assets cannot be left without one.
 
 **Registration chain.** The Sector Administrator registers an asset and submits it → the Kebele Administrator verifies that it physically exists at the recorded place (or sends it back) → the Kifle Ketema Administrator approves and activates it (or sends it back) → the asset is ACTIVE → the Super Administrator monitors city-wide. Nobody can take two steps on the same asset (separation of duties). Only the Sector Administrator can register; the Super Administrator oversees and changes no asset.
 
 **Four dashboards.** Signing in shows the dashboard of your level, limited to your area: the Super Administrator's *city-wide control* (assets by Kifle Ketema/sector/Kebele, pending approvals, transfers and disposals, set-up gaps, governance shortcuts); the Kifle Ketema Administrator's *oversight and approval* (its Kebeles, what waits for its approval); the Kebele Administrator's *physical verification* (what waits for its check, discrepancies, the 13 sector areas); the Sector Administrator's *registration* (Register asset, drafts and returned assets, what is awaiting verification and approval, inspections due). Other roles see the general overview.
 
-**Who creates whom.** Each level creates and manages only the level directly below it: the Super Administrator the 3 Kifle Ketema Administrators, a Kifle Ketema Administrator the Kebele Administrators of its own Kifle Ketema, a Kebele Administrator the Sector Administrators of its own Kebele. Each level can see (not change) the accounts further down in its area. Sector Administrators have no user management. Beside the hierarchy, the Super Administrator also creates the Mayor / Executive, Internal Auditor, Financial Officer and Inspector accounts. Each area has exactly one administrator: a second Kebele Administrator for a Kebele, or a second Sector Administrator for the same sector in a Kebele, is refused until the first account is deactivated.
+**Who creates whom.** Each level creates and manages only the level directly below it: the Super Administrator the 3 Kifle Ketema Administrators, a Kifle Ketema Administrator the Kebele Administrators of its own Kifle Ketema, a Kebele Administrator the Sector Administrators of its own Kebele. Each level sees only the accounts it creates (including those its predecessor in the post created); only the Internal Auditor sees every account, read-only. Sector Administrators have no user management. Beside the hierarchy, the Super Administrator also creates the Mayor / Executive, Internal Auditor, Financial Officer and Inspector accounts. Each area has exactly one administrator: a second Kebele Administrator for a Kebele, or a second Sector Administrator for the same sector in a Kebele, is refused until the first account is deactivated.
 
 **Every asset** records its sector, Kifle Ketema, Kebele, category, ownership, responsible officer and department, current holder, location, condition and status, and an administrator sees, creates, changes, verifies, approves, transfers and reports only inside their own part of this tree.
 
-Create the accounts with `npm run provision-admins` in `backend` (`-- --dry-run` lists them without creating anything). Each account gets a random temporary password, written to `backend/credentials/admin-accounts-<date>.csv` (a later run writes a new file next to it, never over it). **Hand each person their own row, then delete the file** (the folder is git-ignored). At first sign-in the person must choose a new password before anything else works; a password set by an administrator later, or typed when creating an account, is temporary in the same way. Running the command again creates only what is missing and never changes an existing password. If a Super Administrator already exists, no second one is created.
+Create all of these accounts with `npm run provision-admins` in `backend` (`-- --dry-run` lists them without creating anything). Each account gets a random temporary password, written to `backend/credentials/admin-accounts-<date>.csv` (a later run writes a new file next to it, never over it). **Hand each person their own row, then delete the file** (the folder is git-ignored). At first sign-in the person must choose a new password before anything else works; a password set by an administrator later, or typed when creating an account, is temporary in the same way. Running the command again creates only what is missing and never changes an existing password. If a Super Administrator already exists, no second one is created.
 
 ## Monthly reports (the reporting chain)
 
@@ -162,6 +173,7 @@ npm run setup                       # install backend and frontend dependencies
 npm run migrate                     # create / update the tables (safe to run again after an upgrade)
 npm run seed                        # Kifle Ketemas, 13 Kebeles, 13 working sectors, categories, default workflows and alert rules
 npm --prefix backend run create-admin -- admin "Your Name"   # first Super Administrator (password printed once)
+npm --prefix backend run reset-password -- admin            # a forgotten password: a temporary one is printed once
 
 npm run build                       # build the React app
 npm start                           # http://localhost:4000  (API and UI together)
@@ -182,6 +194,23 @@ npm start                           # http://localhost:4000  (API and UI togethe
 
 Set `SMTP_HOST` (and `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`) for e-mail. For SMS, point `SMS_GATEWAY_URL` at any HTTP gateway that accepts `{"to": "...", "message": "..."}`. Without these, notifications still appear in the system. Users need an e-mail address or phone number in their profile.
 
+### AI assistant
+
+A chat button at the bottom right of every page answers "how do I ..." questions and looks things up in the register
+("What is waiting for me?", "How many vehicles in Jiren are in poor condition?", "Show AST-000125"). It can only read,
+and only what the signed-in person could already see; it never changes anything. It answers in the person's language.
+
+Switch it on in `backend/.env` with any OpenAI-compatible service, then restart the server:
+
+```
+AI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai   # Google Gemini, free key: https://aistudio.google.com/apikey
+AI_API_KEY=<your key>
+AI_MODEL=gemini-3.5-flash
+```
+
+Groq (free) and Ollama on the City's own server (no key, data stays in Jimma) are in `.env.example`. On free cloud tiers
+the provider may keep what is sent: get the City's agreement before real data is used. Details: `docs/SECURITY.md`.
+
 ### Backups
 
 ```bash
@@ -194,10 +223,10 @@ Set `AUTO_BACKUP=true` for a daily backup while the server runs, and `MYSQLDUMP_
 ## Tests
 
 ```bash
-npm test      # 162 API tests against a separate database (jimma_ams_test)
+npm test      # 265 API tests in 16 files against a separate database (jimma_ams_test)
 ```
 
-Create the test database once (`CREATE DATABASE jimma_ams_test …`, grant the same user) and set `DB_NAME_TEST` in `.env`. The test runner refuses to wipe any database other than `DB_NAME_TEST`.
+Create the test database once (`CREATE DATABASE jimma_ams_test …`, grant the same user) and set `DB_NAME_TEST` in `.env`. The test runner refuses to wipe any database other than `DB_NAME_TEST`, and tests never reach a real SMS gateway, mail server or AI service whatever `.env` holds (`backend/test/env.js`, which every test file imports first).
 
 The tests cover sign-in, who can see and change what, the approval workflows and separation of duties, acquisition and duplicates, assignment and ownership history, reservations and conflicts, verification (found / wrong place / missing / corrected), alerts and notifications (including e-mail and SMS), QR codes and scanning, the map data, bulk import, monthly reports up the chain, analytics, depreciation, backups, API keys, session ending, financial privacy, documents, the audit log and injection attempts.
 

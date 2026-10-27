@@ -28,14 +28,19 @@ export const can = {
   create: (u) => has(u, 'asset.create'),
   review: (u) => has(u, 'asset.review'),
   approve: (u) => has(u, 'asset.approve'),
-  decide: (u) => has(u, 'request.decide'),
+  reviewRequests: (u) => has(u, 'request.review'), // step 1 of a two-step request: the Kebele Administrator
+  decide: (u) => has(u, 'request.decide'), // the final approval: the Kifle Ketema Administrator
   request: (u) => has(u, 'request.create'),
+  openApprovals: (u) => ['asset.review', 'asset.approve', 'request.review', 'request.decide', 'request.create'].some((p) => has(u, p)),
   maintain: (u) => has(u, 'maintenance.record'),
   inspect: (u) => has(u, 'inspection.record'),
   overseeInspectors: (u) => has(u, 'inspection.oversee'),
   // the chain of monthly reports (mirrors REPORTS_TO on the server): those who send one, those who receive them, and the Super Administrator
   monthly: (u) => ['SECTOR_ADMIN', 'KEBELE_ADMIN', 'FINANCIAL_OFFICER', 'INSPECTOR', 'KIFLE_ADMIN', 'AUDITOR', 'EXECUTIVE', 'SUPER_ADMIN'].includes(u?.role),
   verify: (u) => has(u, 'verification.record') || has(u, 'verification.manage'),
+  // the keepers of assets (the Sector Administrator) follow the stock-taking results of their own assets, and the
+  // Internal Auditor those of the whole city, read-only
+  viewVerification: (u) => has(u, 'verification.record') || has(u, 'verification.manage') || has(u, 'asset.edit') || u?.role === 'AUDITOR',
   manageVerification: (u) => has(u, 'verification.manage'),
   reserve: (u) => has(u, 'reservation.request'),
   decideReservation: (u) => has(u, 'reservation.decide'),
@@ -49,7 +54,8 @@ export const can = {
   managedAccountRole,
   managedAccountRoles,
   openUsers: (u) => Boolean(managedAccountRole(u)),
+  // the Internal Auditor sees every account and its history, read-only
+  viewUsers: (u) => Boolean(managedAccountRole(u)) || u?.role === 'AUDITOR',
   manageSystem: (u) => has(u, 'system.manage'),
   citywide: (u) => ALL.includes(u?.role),
-  oversee: (u) => u?.role === 'SUPER_ADMIN', // read-only view of approvals and verification across the city
 };

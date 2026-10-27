@@ -19,7 +19,7 @@ export default function Analytics() {
 
       <section aria-labelledby="ind-h">
         <h2 id="ind-h">{t('Decision indicators')}</h2>
-        <div className="grid grid-tiles">
+        <div className="grid grid-tiles grid-tiles-3 indicator-tiles">
           {a.indicators.map((i) => (
             <div key={i.key} className={`tile tile-${i.status === 'good' ? 'ok' : i.status}`}>
               <div className="value">{i.value}{i.unit}</div>
@@ -60,10 +60,10 @@ export default function Analytics() {
             <h2>{t('Asset value')}</h2>
             {a.value_analysis && (
               <dl className="dl">
-                <dt>{t('Acquisition cost')}</dt><dd>{etb(a.value_analysis.acquisition_cost)}</dd>
-                <dt>{t('Current valuation')}</dt><dd>{etb(a.value_analysis.current_valuation)}</dd>
-                <dt>{t('Book value (depreciated)')}</dt><dd>{etb(a.value_analysis.book_value)} <span className="muted small">({t('{n} assets with enough data', { n: a.value_analysis.assets_with_depreciation })})</span></dd>
-                <dt>{t('Depreciation to date')}</dt><dd>{etb(a.value_analysis.accumulated_depreciation)}</dd>
+                <dt>{t('Acquisition cost')}</dt><dd>{a.value_analysis.acquisition_cost == null ? t('Not recorded') : etb(a.value_analysis.acquisition_cost)}</dd>
+                <dt>{t('Current valuation')}</dt><dd>{a.value_analysis.current_valuation == null ? t('Not valued') : etb(a.value_analysis.current_valuation)}</dd>
+                <dt>{t('Book value (depreciated)')}</dt><dd>{a.value_analysis.book_value == null ? t('Not enough data') : etb(a.value_analysis.book_value)} <span className="muted small">({t('{n} assets with enough data', { n: a.value_analysis.assets_with_depreciation })})</span></dd>
+                <dt>{t('Depreciation to date')}</dt><dd>{a.value_analysis.accumulated_depreciation == null ? t('Not enough data') : etb(a.value_analysis.accumulated_depreciation)}</dd>
                 <dt>{t('Fully depreciated')}</dt><dd>{t('{n} assets', { n: a.value_analysis.fully_depreciated })}</dd>
               </dl>
             )}
@@ -83,7 +83,7 @@ export default function Analytics() {
       <section style={{ marginTop: 24 }}>
         <h2>{t('Consider replacing or retiring')}</h2>
         <p className="muted small">{t('Assets in poor or critical condition where repairs cost half the purchase price or more, or that have passed their useful life.')}</p>
-        <Table head={['Asset', 'Condition', 'Why', ...(money ? ['Repairs so far', 'Purchase price'] : [])]} empty={a.replacement_candidates.length === 0 && 'No asset meets these tests.'}>
+        <Table head={['Asset', 'Condition', 'Why', ...(money ? ['Repairs so far', 'Purchase price'] : [])]} num={[3, 4]} empty={a.replacement_candidates.length === 0 && 'No asset meets these tests.'}>
           {a.replacement_candidates.map((r) => (
             <tr key={r.id}>
               <td><Link to={`/assets/${r.id}`}>{r.asset_code}</Link> {r.name}</td><td><Badge value={r.condition} /></td><td>{r.reasons.map((x) => t(x)).join('; ')}</td>
@@ -95,12 +95,13 @@ export default function Analytics() {
 
       {money && (
         <section style={{ marginTop: 24 }}>
-          <h2>{t('High-maintenance assets')}</h2>
-          <Table head={['Asset', 'Condition', 'Jobs', 'Maintenance cost', 'Purchase price', 'Repairs as % of price']} empty={a.high_maintenance.length === 0 && 'No maintenance costs recorded yet.'}>
+          <h2>{t('Highest maintenance spending')}</h2>
+          <p className="muted small">{t('Assets ranked by what their repairs have cost so far. Repairs at half the purchase price or more are shown in red.')}</p>
+          <Table head={['Asset', 'Condition', 'Jobs', 'Maintenance cost', 'Purchase price', 'Repairs as % of price']} num={[2, 3, 4, 5]} empty={a.high_maintenance.length === 0 && 'No maintenance costs recorded yet.'}>
             {a.high_maintenance.map((r) => (
               <tr key={r.id}>
-                <td><Link to={`/assets/${r.id}`}>{r.asset_code}</Link> {r.name}</td><td><Badge value={r.condition} /></td><td>{num(r.jobs)}</td>
-                <td className="num">{etb(r.maintenance_cost)}</td><td className="num">{r.acquisition_cost != null ? etb(r.acquisition_cost) : '—'}</td>
+                <td><Link to={`/assets/${r.id}`}>{r.asset_code}</Link> {r.name}</td><td><Badge value={r.condition} /></td><td className="num">{num(r.jobs)}</td>
+                <td className="num">{etb(r.maintenance_cost)}</td><td className="num">{r.acquisition_cost != null ? etb(r.acquisition_cost) : t('Not recorded')}</td>
                 <td className="num">{r.cost_ratio != null ? <span className={r.cost_ratio >= 50 ? 'text-bad' : undefined}>{r.cost_ratio}%</span> : '—'}</td>
               </tr>
             ))}

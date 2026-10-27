@@ -108,7 +108,16 @@ describe('monthly reports up the chain of responsibility', () => {
   });
 
   it('a report goes to the boss only, who accepts it or returns it with a reason', async () => {
+    // the banner on each dashboard: the month's report while it is owed, and what waits for the boss
+    const reminder = async (who) => (await api('get', '/api/monthly-reports/reminder', who).expect(200)).body;
+    const owed = (await reminder(u.sa1)).own;
+    assert.deepEqual([owed.period.key, owed.deadline, owed.returned], [period.key, addDays(period.end, 5), false]);
+    assert.equal((await reminder(u.kj)).own.deadline, addDays(period.end, 15));
+    for (const who of [u.mayor, u.super]) assert.deepEqual(await reminder(who), { own: null, waiting: 0 }); // they send none
+
     const sent = (await submit(u.sa1, { comment: 'All in order.' }).expect(201)).body;
+    assert.equal((await reminder(u.sa1)).own, null);
+    assert.equal((await reminder(u.kb1)).waiting, 1);
     assert.deepEqual([sent.status, sent.version, sent.reporter.username], ['SUBMITTED', 1, 'sector.con.a']);
     await submit(u.sa1).expect(409); // already waiting for a decision
     assert.ok((await titles(u.kb1)).some((x) => /sent the monthly report/.test(x)));
@@ -127,6 +136,11 @@ describe('monthly reports up the chain of responsibility', () => {
     const back = (await api('get', '/api/notifications', u.sa1).expect(200)).body.find((n) => n.type === 'MONTHLY_REPORT_RETURNED');
     assert.match(back.link, /^\/monthly-reports\/prepare\//); // straight to correcting it
     assert.equal((await mine(u.sa1)).periods[0].status, 'RETURNED');
+    const report = async (who) => (await api('get', `/api/monthly-reports/report/${sent.id}`, who).expect(200)).body;
+    assert.equal((await report(u.sa1)).can_resend, true); // its sender can correct it from the report itself
+    assert.equal((await report(u.kb1)).can_resend, false);
+    assert.equal((await reminder(u.sa1)).own.returned, true); // owed again, until it is sent back
+    assert.equal((await reminder(u.kb1)).waiting, 0);
     const again = (await submit(u.sa1, { comment: 'Location added.' }).expect(201)).body;
     assert.deepEqual([again.id, again.version, again.status], [sent.id, 2, 'SUBMITTED']);
     await api('post', `/api/monthly-reports/report/${sent.id}/accept`, u.kb1).send({}).expect(200);

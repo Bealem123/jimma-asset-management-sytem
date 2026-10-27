@@ -73,9 +73,8 @@ describe('users', () => {
     await api('get', '/api/users', fx.users.officer).expect(403);
     await api('post', '/api/users', fx.users.mayor).send({}).expect(403);
     const list = await api('get', '/api/users', fx.users.super).expect(200);
-    const officer = list.body.find((u) => u.username === 'officer');
-    assert.equal(officer.kebele_ids.length, 2);
-    assert.equal(officer.read_only, true, 'the Super Administrator sees every account but changes only Kifle Ketema Administrators');
+    assert.equal(list.body.find((u) => u.username === 'officer'), undefined, 'the Super Administrator sees only the accounts it creates');
+    assert.ok(list.body.every((u) => ['KIFLE_ADMIN', 'EXECUTIVE', 'AUDITOR', 'FINANCIAL_OFFICER', 'INSPECTOR'].includes(u.role) && !u.read_only));
     assert.equal(list.body.find((u) => u.username === 'jirenadmin').read_only, false);
     assert.ok(list.body.every((u) => u.password_hash === undefined));
   });
@@ -118,8 +117,8 @@ describe('users', () => {
     const ok = await request(app).post('/api/auth/login').send({ username: 'jirenadmin', password: 'Reset-Password-77' }).expect(200);
     assert.equal(ok.body.user.password, undefined);
     for (const u of [fx.users.officer, fx.users.kebeleA, fx.users.sectorAdmin]) {
-      await api('patch', `/api/users/${u.id}`, fx.users.super).send({ password: 'Reset-Password-77' }).expect(403);
-      await api('post', `/api/users/${u.id}/end-sessions`, fx.users.super).expect(403);
+      await api('patch', `/api/users/${u.id}`, fx.users.super).send({ password: 'Reset-Password-77' }).expect(404); // not its account: not even visible
+      await api('post', `/api/users/${u.id}/end-sessions`, fx.users.super).expect(404);
     }
   });
 
@@ -142,8 +141,9 @@ describe('users', () => {
   });
 
   it('cannot change its own account', async () => {
-    await api('patch', `/api/users/${fx.users.super.id}`, fx.users.super).send({ is_active: false }).expect(403);
-    await api('patch', `/api/users/${fx.users.super.id}`, fx.users.super).send({ role: 'AUDITOR' }).expect(403);
+    // its own account is not among the accounts it manages (each person changes their own details under My account)
+    await api('patch', `/api/users/${fx.users.super.id}`, fx.users.super).send({ is_active: false }).expect(404);
+    await api('patch', `/api/users/${fx.users.super.id}`, fx.users.super).send({ role: 'AUDITOR' }).expect(404);
   });
 });
 
@@ -205,6 +205,45 @@ describe('dashboard and audit log', () => {
     assert.equal(d.maintenance_due[0].overdue, false);
   });
 
+  it('the money totals leave out disposed assets, as Finance does', async () => {
+    const a = await db('assets').where({ name: 'Excavator' }).first();
+    await db('assets').where({ id: a.id }).update({ status: 'DISPOSED' });
+    try {
+      const d = (await api('get', '/api/dashboard', fx.users.mayor).expect(200)).body;
+      assert.equal(d.totals.acquisition_cost, 0);
+      assert.equal(d.totals.maintenance_cost, 45000); // money already spent stays counted
+    } finally {
+      await db('assets').where({ id: a.id }).update({ status: a.status });
+    }
+  });
+
+  it('waiting times count from the step a registration reached, not from its last edit', async () => {
+    const a = await db('assets').where({ name: 'Ambulance' }).first();
+    const longAgo = new Date(Date.now() - 20.5 * 86400000);
+    await db('assets').where({ id: a.id }).update({ approval_state: 'SUBMITTED', approval_state_at: longAgo, updated_at: db.fn.now() });
+    try {
+      const perf = (await api('get', '/api/dashboard/performance', fx.users.mayor).expect(200)).body;
+      assert.equal(perf.kifle_ketemas.find((k) => k.id === a.kifle_ketema_id).oldest_wait_days, 20); // a correction today hides nothing
+    } finally {
+      await db('assets').where({ id: a.id }).update({ approval_state: a.approval_state, approval_state_at: a.approval_state_at });
+    }
+    // each step of the chain restarts the clock
+    const excavator = await db('assets').where({ name: 'Excavator' }).first();
+    assert.ok(Date.now() - new Date(excavator.approval_state_at).getTime() < 3600000);
+  });
+
+  it('an asset in use that was never inspected is due for its first inspection', async () => {
+    const due = async () => (await api('get', '/api/dashboard', fx.users.mayor).expect(200)).body.totals.inspection_due;
+    assert.equal(await due(), 1); // the Excavator: active, never inspected (the Ambulance is not in use yet)
+    const excavator = await db('assets').where({ name: 'Excavator' }).first();
+    const [id] = await db('inspection_records').insert({ asset_id: excavator.id, inspection_date: '2026-03-01', inspector: 'x', condition_found: 'GOOD' });
+    try {
+      assert.equal(await due(), 0); // inspected, and no next date was set
+    } finally {
+      await db('inspection_records').where({ id }).del();
+    }
+  });
+
   it('a scoped user sees a scoped dashboard', async () => {
     const d = (await api('get', '/api/dashboard', fx.users.kebeleA).expect(200)).body;
     assert.equal(d.totals.assets, 1);
@@ -220,6 +259,22 @@ describe('dashboard and audit log', () => {
     }
     const filtered = (await api('get', '/api/audit?action=CREATE&entity=asset', fx.users.auditor)).body;
     assert.ok(filtered.rows.every((r) => r.action === 'CREATE' && r.entity === 'asset'));
+  });
+
+  it('the Internal Auditor sees every account and the stock-takings, and changes neither', async () => {
+    const users = (await api('get', '/api/users', fx.users.auditor).expect(200)).body;
+    assert.equal(users.length, await db('users').count({ n: 'id' }).first().then((r) => Number(r.n)));
+    assert.ok(users.every((u) => u.read_only));
+    await api('get', `/api/users/${fx.users.kebeleA.id}/history`, fx.users.auditor).expect(200);
+    await api('patch', `/api/users/${fx.users.kebeleA.id}`, fx.users.auditor).send({ is_active: false }).expect(403);
+    await api('post', '/api/users', fx.users.auditor).send({ username: 'x.y', full_name: 'X Y', password: PASSWORD, role: 'SECTOR_ADMIN' }).expect(403);
+    await api('post', `/api/users/${fx.users.kebeleA.id}/end-sessions`, fx.users.auditor).expect(403);
+
+    await api('get', '/api/verification', fx.users.auditor).expect(200);
+    await api('post', '/api/verification', fx.users.auditor).send({ name: 'Audit stock-taking' }).expect(403);
+    // the Mayor, who does not audit, still sees neither
+    await api('get', '/api/users', fx.users.mayor).expect(403);
+    await api('get', '/api/verification', fx.users.mayor).expect(403);
   });
 
   it('the audit log records who did what, and exports are logged too', async () => {

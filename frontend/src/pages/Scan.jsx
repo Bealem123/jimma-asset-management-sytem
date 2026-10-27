@@ -64,7 +64,7 @@ export default function Scan() {
         {camera ? <QrScanner onScan={(t) => open(t)} paused={busy} /> : <button type="button" className="btn" onClick={() => setCamera(true)}>{t('Use the camera')}</button>}
         <form className="actions" style={{ marginTop: 14 }} onSubmit={(e) => { e.preventDefault(); if (typed.trim()) open(typed.trim()); }}>
           <label className="sr-only" htmlFor="scan-code">{t('Asset ID')}</label>
-          <input id="scan-code" placeholder={t('Asset ID, e.g. AST-000125')} value={typed} onChange={(e) => setTyped(e.target.value)} style={{ maxWidth: 300 }} />
+          <input id="scan-code" placeholder={t('Asset ID, e.g. AST-000125')} maxLength={300} autoCapitalize="characters" spellCheck={false} value={typed} onChange={(e) => setTyped(e.target.value)} style={{ maxWidth: 300 }} />
           <button type="submit" className="btn" disabled={busy}>{t('Open')}</button>
         </form>
       </section>

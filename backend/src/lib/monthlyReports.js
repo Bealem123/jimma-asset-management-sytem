@@ -147,7 +147,7 @@ export async function buildSnapshot(user, period, people) {
     n(live().where('assets.status', 'DAMAGED')),
     n(live().where('assets.status', 'LOST')),
     n(live().whereIn('assets.condition', ['POOR', 'CRITICAL'])),
-    n(joined('follow_up_actions', 'f').where('f.status', 'OPEN'), 'f.id'),
+    n(joined('follow_up_actions', 'f').whereIn('f.status', ['OPEN', 'REPORTED']), 'f.id'),
     n(joined('verification_items', 'v').whereIn('v.discrepancy_status', ['OPEN', 'INVESTIGATING']), 'v.id'),
     nextInspections(user),
   ]);
@@ -275,17 +275,32 @@ export async function remindMonthlyReports(now = new Date()) {
   return created;
 }
 
-/** For the side-menu badge: reports waiting for this user's decision, plus their own report if it is still owed. */
-export async function monthlyQueue(user) {
+/**
+ * Where this user stands, for the banner on their dashboard: their own report for the month that just ended while it
+ * is still owed (from the first day after the month, with its deadline), and the reports waiting for their decision.
+ */
+export async function monthlyReminder(user, now = new Date()) {
+  const today = todayIso(now);
+  let own = null;
+  if (REPORTS_TO[user.role]) {
+    const [period] = endedPeriods(today, await reportCalendar(), 1);
+    const [mine] = await reportRows([period.key], [user.id]);
+    if (!mine || mine.status === 'RETURNED') {
+      const deadline = deadlineOf(period, user.role);
+      const lead = (await getRule('MONTHLY_REPORT_DUE')).lead_days ?? 3; // the same warning time as the reminders
+      own = { period, deadline, returned: Boolean(mine), late: today > deadline, due_soon: today >= addDays(deadline, -lead) };
+    }
+  }
   let waiting = 0;
   if (RECEIVER_ROLES.includes(user.role)) {
     const ids = teamOf(await loadPeople(), user).map((u) => u.id);
-    if (ids.length) waiting += Number((await db('monthly_reports').whereIn('user_id', ids).where('status', 'SUBMITTED').count({ n: 'id' }).first()).n);
+    if (ids.length) waiting = Number((await db('monthly_reports').whereIn('user_id', ids).where('status', 'SUBMITTED').count({ n: 'id' }).first()).n);
   }
-  if (REPORTS_TO[user.role]) {
-    const [period] = endedPeriods(todayIso(), await reportCalendar(), 1);
-    const mine = await db('monthly_reports').where({ period_key: period.key, user_id: user.id }).first();
-    if (!mine || mine.status === 'RETURNED') waiting += 1;
-  }
-  return waiting;
+  return { own, waiting };
+}
+
+/** For the side-menu badge: reports waiting for this user's decision, plus their own report if it is still owed. */
+export async function monthlyQueue(user) {
+  const { own, waiting } = await monthlyReminder(user);
+  return waiting + (own ? 1 : 0);
 }

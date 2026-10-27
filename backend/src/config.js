@@ -11,8 +11,14 @@ export const config = {
   uploadDir: path.resolve(`${process.env.UPLOAD_DIR || 'uploads'}${isTest ? '-test' : ''}`),
   maxUploadBytes: 10 * 1024 * 1024,
   separationOfDuties: (process.env.SEPARATION_OF_DUTIES ?? 'true') !== 'false',
-  // how far (metres) the Kebele Administrator may stand from an asset's recorded location when verifying it on site
-  siteCheckMaxDistanceM: Number(process.env.SITE_CHECK_MAX_DISTANCE_M || 300),
+  // verifying a registration on site: the Kebele Administrator must stand within this many metres of the asset's
+  // recorded location (further is refused), with a phone reading at least this precise (a rougher one is refused)
+  siteCheckMaxDistanceM: Number(process.env.SITE_CHECK_MAX_DISTANCE_M || 50),
+  siteCheckMaxAccuracyM: Number(process.env.SITE_CHECK_MAX_ACCURACY_M || 50),
+  // Jimma City as a box (south, west, north, east): asset locations outside it are refused, and the map stays inside it
+  jimmaBounds: (process.env.JIMMA_BOUNDS || '7.58,36.72,7.78,36.95').split(',').map(Number),
+  // the city centre (latitude, longitude): where the map draws an asset with no position and no area centre set yet
+  jimmaCentre: (process.env.JIMMA_CENTRE || '7.6738,36.8346').split(',').map(Number),
   db: {
     host: process.env.DB_HOST || '127.0.0.1',
     port: Number(process.env.DB_PORT || 3306),

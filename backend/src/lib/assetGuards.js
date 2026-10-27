@@ -58,7 +58,7 @@ export async function resolveRefs(user, merged, changedKeys) {
 
 export async function getVisibleAsset(req, id = req.params.id) {
   const asset = await scopedAsset(req.user, id);
-  if (!asset) throw notFound('Asset not found.');
+  if (!asset) throw notFound('Asset not found, or it is outside your area.');
   return asset;
 }
 
@@ -83,6 +83,6 @@ export const guardAsset = (permission, { allowDisposed = false } = {}) => async 
 export async function findVisibleByCodeOrId(user, ref) {
   const q = /^\d+$/.test(String(ref)) ? { 'assets.id': Number(ref) } : { 'assets.asset_code': String(ref).trim().toUpperCase() };
   const asset = await applyScope(db('assets').where(q), user).first();
-  if (!asset) throw notFound('Asset not found.');
+  if (!asset) throw notFound('Asset not found, or it is outside your area.');
   return asset;
 }

@@ -7,7 +7,7 @@ import {
 import { applyFilters } from '../lib/assetQuery.js';
 import { nextInspections } from '../lib/inspections.js';
 import { monthlyQueue } from '../lib/monthlyReports.js';
-import { CONDITIONS, STATUSES, APPROVAL_STATES, ROLES } from '../lib/constants.js';
+import { CONDITIONS, DUE_WINDOW_DAYS, STATUSES, APPROVAL_STATES, ROLES } from '../lib/constants.js';
 
 const router = Router();
 
@@ -22,7 +22,7 @@ const ACTIVITY = [
   'FOLLOW_UP_ADD', 'FOLLOW_UP_CLOSE', 'VERIFICATION_RECORD', 'ARCHIVE', 'UNARCHIVE',
 ];
 const MONEY_ACTIVITY = ['VALUATION_ADD', 'REVENUE_ADD'];
-const ACTIVITY_SIZE = 10;
+const ACTIVITY_SIZE = 50;
 const parseJson = (v) => { if (!v || typeof v === 'object') return v; try { return JSON.parse(v); } catch { return null; } };
 
 /** One entry of the card: who (by name and role), which asset, what happened, and the detail that matters. */
@@ -40,7 +40,6 @@ const activityRow = (r) => {
 };
 router.use(authenticate);
 
-const DUE_WINDOW_DAYS = 30;
 const isoDay = (offsetDays = 0) => new Date(Date.now() + offsetDays * 86400000).toISOString().slice(0, 10);
 
 router.get('/', async (req, res) => {
@@ -72,7 +71,11 @@ router.get('/', async (req, res) => {
     totals, byStatus, byCondition, byApproval, bySector, byKifle, byCategory, revenue, attention, maintCost, recent,
     byKebele, pendingRequests, pendingReservations, discrepancies, openFollowUps, revenueReceived, openMaintenance, reservable,
   ] = await Promise.all([
-    scoped().count({ total: 'assets.id' }).sum({ acquisition: 'assets.acquisition_cost', valuation: 'assets.current_valuation' }).first(),
+    // what the city holds is worth: disposed assets are no longer held (as in Finance, Analytics and Performance)
+    scoped().count({ total: 'assets.id' })
+      .select(db.raw(`SUM(CASE WHEN assets.status <> 'DISPOSED' THEN assets.acquisition_cost END) AS acquisition,
+        SUM(CASE WHEN assets.status <> 'DISPOSED' THEN assets.current_valuation END) AS valuation`))
+      .first(),
     simple('status', STATUSES),
     simple('condition', CONDITIONS),
     simple('approval_state', APPROVAL_STATES),
@@ -96,7 +99,7 @@ router.get('/', async (req, res) => {
     applyScope(db('approval_requests as r').join('assets', 'assets.id', 'r.asset_id'), user).whereIn('r.status', ['PENDING', 'REVIEWED']).count({ n: 'r.id' }).first(),
     applyScope(db('asset_reservations as r').join('assets', 'assets.id', 'r.asset_id'), user).where('r.status', 'PENDING').count({ n: 'r.id' }).first(),
     applyScope(db('verification_items as i').join('assets', 'assets.id', 'i.asset_id'), user).whereIn('i.discrepancy_status', ['OPEN', 'INVESTIGATING']).count({ n: 'i.id' }).first(),
-    applyScope(db('follow_up_actions as f').join('assets', 'assets.id', 'f.asset_id'), user).where('f.status', 'OPEN').count({ n: 'f.id' }).first(),
+    applyScope(db('follow_up_actions as f').join('assets', 'assets.id', 'f.asset_id'), user).whereIn('f.status', ['OPEN', 'REPORTED']).count({ n: 'f.id' }).first(),
     money
       ? applyScope(db('asset_revenues as r').join('assets', 'assets.id', 'r.asset_id'), user).sum({ s: 'r.amount' }).first()
       : Promise.resolve({ s: null }),
@@ -139,6 +142,20 @@ router.get('/', async (req, res) => {
   const pendingByType = await applyScope(db('approval_requests as r').join('assets', 'assets.id', 'r.asset_id'), user)
     .whereIn('r.status', ['PENDING', 'REVIEWED']).select('r.request_type').count({ n: 'r.id' }).groupBy('r.request_type');
 
+  // For an approver: how long the oldest item waiting for approval has waited (a registration verified on site, or
+  // approved and not yet activated, from the day it reached that step; a request from the day it was made: as in Performance)
+  let oldestApproval = null;
+  let oldestRequest = null;
+  if (canApprove(user) || canDecideRequests(user)) {
+    const [reg, req] = await Promise.all([
+      scoped().whereIn('assets.approval_state', ['REVIEWED', 'APPROVED']).min({ oldest: 'assets.approval_state_at' }).first(),
+      applyScope(db('approval_requests as r').join('assets', 'assets.id', 'r.asset_id'), user).whereIn('r.status', ['PENDING', 'REVIEWED'])
+        .min({ oldest: 'r.requested_at' }).first(),
+    ]);
+    oldestApproval = days(reg?.oldest);
+    oldestRequest = days(req?.oldest);
+  }
+
   // The last 12 months: assets registered and maintenance jobs (with their cost, for those who may see money)
   const months = [];
   const now = new Date();
@@ -162,13 +179,19 @@ router.get('/', async (req, res) => {
       .whereNotExists(db('user_kifle_ketemas as uk').join('users as u', 'u.id', 'uk.user_id')
         .whereRaw('uk.kifle_ketema_id = kifle_ketemas.id').where({ 'u.role': role, 'u.is_active': 1 }))
       .count({ n: 'id' }).first();
-    const [unlinked, noAdmin, noInspector] = await Promise.all([
+    const [unlinked, noAdmin, noInspector, noKebeleAdmin] = await Promise.all([
       db('kebeles').where({ is_active: 1 }).whereNull('kifle_ketema_id').count({ n: 'id' }).first(),
       without(ROLES.KIFLE_ADMIN),
       without(ROLES.INSPECTOR), // only Inspectors record inspections: without one, nobody inspects there
+      // only the Kebele Administrator verifies new registrations on site: without one, they wait there for ever
+      db('kebeles').where({ is_active: 1 }).whereNotNull('kifle_ketema_id')
+        .whereNotExists(db('user_kebeles as ub').join('users as u', 'u.id', 'ub.user_id')
+          .whereRaw('ub.kebele_id = kebeles.id').where({ 'u.role': ROLES.KEBELE_ADMIN, 'u.is_active': 1 }))
+        .count({ n: 'id' }).first(),
     ]);
     setup = {
       kebeles_without_kifle_ketema: Number(unlinked.n), kifle_ketemas_without_admin: Number(noAdmin.n), kifle_ketemas_without_inspector: Number(noInspector.n),
+      kebeles_without_admin: Number(noKebeleAdmin.n),
     };
   }
 
@@ -195,6 +218,8 @@ router.get('/', async (req, res) => {
       revenue_received: revenueReceived.s == null ? null : Number(revenueReceived.s),
       maintenance_overdue: maintenance_due.filter((m) => m.overdue).length,
       maintenance_due_soon: maintenance_due.filter((m) => !m.overdue).length,
+      oldest_approval_days: oldestApproval, // registrations waiting for an approver
+      oldest_request_days: oldestRequest, // transfers, disposals ... waiting for a decision
       inspection_due,
       pending_by_type: Object.fromEntries(pendingByType.map((r) => [r.request_type, Number(r.n)])),
     },
@@ -295,7 +320,7 @@ const days = (ts) => (ts ? Math.max(0, Math.floor((Date.now() - new Date(ts).get
 /**
  * One row per Kifle Ketema and per Kebele the user can see: how much is registered and active, what is waiting
  * at which level and for how long, and what is at risk. Each area's administrator is named, so leadership can see
- * who is responsible. A registration's waiting time counts from its last change (assets.updated_at).
+ * who is responsible. A registration's waiting time counts from the day it reached its current step (assets.approval_state_at).
  */
 router.get('/performance', require_(permissionCheck('analytics.view'), 'Your role cannot see analytics.'), async (req, res) => {
   const user = req.user;
@@ -311,7 +336,7 @@ router.get('/performance', require_(permissionCheck('analytics.view'), 'Your rol
           SUM(assets.\`condition\` IN ('POOR','CRITICAL')) AS poor,
           SUM(assets.status = 'LOST') AS lost,
           SUM(assets.current_valuation) AS value,
-          MIN(CASE WHEN assets.approval_state IN ('SUBMITTED','REVIEWED','APPROVED') THEN assets.updated_at END) AS oldest_registration`))
+          MIN(CASE WHEN assets.approval_state IN ('SUBMITTED','REVIEWED','APPROVED') THEN assets.approval_state_at END) AS oldest_registration`))
         .groupBy(`assets.${col}`),
       // active assets with no current use, or only an IDLE use (the same rule as Analytics)
       live().whereNotNull(`assets.${col}`).where('assets.status', 'ACTIVE').where('assets.approval_state', 'ACTIVE')
@@ -359,7 +384,7 @@ router.get('/performance', require_(permissionCheck('analytics.view'), 'Your rol
     }
   }
   const adminsOf = (role, table, col) => db('users').where({ 'users.role': role, 'users.is_active': 1 })
-    .join(`${table} as x`, 'x.user_id', 'users.id').select(`x.${col} as area_id`, 'users.full_name', 'users.username', 'users.last_login_at');
+    .join(`${table} as x`, 'x.user_id', 'users.id').select(`x.${col} as area_id`, 'users.full_name', 'users.username', 'users.last_login_at').orderBy('users.id');
 
   const [kifleList, kebeleList, kifleAdmins, kebeleAdmins, perKifle, perKebele] = await Promise.all([
     kifleQ, kebeleQ,
@@ -367,22 +392,23 @@ router.get('/performance', require_(permissionCheck('analytics.view'), 'Your rol
     adminsOf(ROLES.KEBELE_ADMIN, 'user_kebeles', 'kebele_id'),
     measure('kifle_ketema_id'), measure('kebele_id'),
   ]);
-  const adminOf = (rows, id) => {
-    const a = rows.find((x) => x.area_id === id);
-    return a ? { full_name: a.full_name, username: a.username, last_login_at: a.last_login_at } : null;
-  };
+  // an area has one administrator; accounts made before that rule (or by hand) can leave two active, and both are shown
+  const holders = (rows, id) => rows.filter((x) => x.area_id === id)
+    .map((a) => ({ full_name: a.full_name, username: a.username, last_login_at: a.last_login_at }));
+  const adminOf = (rows, id) => holders(rows, id)[0] ?? null;
+  const people = (rows, id) => ({ admin: adminOf(rows, id), admins: holders(rows, id) });
   const kebelesOf = (kid) => kebeleList.filter((b) => b.kifle_ketema_id === kid);
   res.json({
     can_see_money: money,
     kebele_level: seesKebeleLevel(user),
     kifle_ketemas: kifleList.map((k) => ({
-      id: k.id, name: k.name, admin: adminOf(kifleAdmins, k.id), ...perKifle(k.id),
+      id: k.id, name: k.name, ...people(kifleAdmins, k.id), ...perKifle(k.id),
       kebeles: kebelesOf(k.id).length,
       kebeles_without_admin: kebelesOf(k.id).filter((b) => !adminOf(kebeleAdmins, b.id)).length,
     })),
     kebeles: !seesKebeleLevel(user) ? [] : kebeleList.map((b) => ({
       id: b.id, name: b.name, kifle_ketema_id: b.kifle_ketema_id, kifle_ketema_name: b.kifle_ketema_name,
-      admin: adminOf(kebeleAdmins, b.id), ...perKebele(b.id),
+      ...people(kebeleAdmins, b.id), ...perKebele(b.id),
     })),
   });
 });

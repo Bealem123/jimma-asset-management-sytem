@@ -4,6 +4,7 @@ import QRCode from 'qrcode';
 import { parse as parseCsv } from 'csv-parse/sync';
 import { z } from 'zod';
 import { db } from '../db.js';
+import { config } from '../config.js';
 import { authenticate, require_ } from '../middleware/auth.js';
 import { HttpError, conflict, parse } from '../middleware/errors.js';
 import { applyScope, maskFinancial, permissionCheck } from '../lib/permissions.js';
@@ -13,13 +14,13 @@ import { acquisitionSchema, assertNoDuplicates, assetSchema } from '../lib/asset
 import {
   assetCode, fail, findVisibleByCodeOrId, getVisibleAsset, guardAsset, resolveRefs,
 } from '../lib/assetGuards.js';
-import { assetByToken, ensureToken } from '../lib/publicAsset.js';
+import { RETIRED_LABEL, ensureToken, newToken, readLabel } from '../lib/publicAsset.js';
 import { submitOrExecute } from '../lib/requests.js';
+import { latInJimma, lngInJimma } from '../lib/jimma.js';
+import { recordRevenue, revenueSchema } from '../lib/money.js';
+import { DISPOSAL_METHODS, LABEL_REPLACE_REASONS, OWNERSHIP_TYPES } from '../lib/constants.js';
 import {
-  DISPOSAL_METHODS, OWNERSHIP_TYPES, REVENUE_TYPES,
-} from '../lib/constants.js';
-import {
-  dateStr, lat, lng, money, oneOf, optDate, optIdRef, optStr, reqMoney, reqStr,
+  dateStr, lat, lng, money, oneOf, optIdRef, optNameText, optPersonName, optStr, reqNameText, reqStr, likePattern,
 } from '../lib/schemas.js';
 import { listSchema } from './assets.js';
 
@@ -34,16 +35,30 @@ const reply = async (req, res, out, assetId) => {
 
 // ------------------------------------------------------------------ map (GIS)
 
+// Every asset is drawn in Jimma: at its GPS position when it has one inside the city, otherwise at the centre of the
+// Kebele it is registered in, or of its Kifle Ketema (set in Master data), or, while neither is set, at the city centre.
+// `placed` says which, so an approximate place is never taken for the asset's real one; `gps_outside` marks a recorded
+// position outside the city, to be corrected.
 router.get('/map', async (req, res) => {
   const f = parse(listSchema, { ...req.query, page: 1, page_size: 100 });
   const rows = await applyFilters(applyScope(assetBase(), req.user), f)
-    .whereNotNull('assets.latitude').whereNotNull('assets.longitude').whereNot('assets.status', 'DISPOSED')
+    .whereNot('assets.status', 'DISPOSED')
+    .select('b.latitude as kebele_lat', 'b.longitude as kebele_lng', 'k.latitude as kifle_lat', 'k.longitude as kifle_lng')
     .limit(5000);
-  res.json(rows.map((r) => ({
-    id: r.id, asset_code: r.asset_code, name: r.name, latitude: r.latitude, longitude: r.longitude,
-    category_name: r.category_name, sector_name: r.sector_name, kifle_ketema_name: r.kifle_ketema_name, kebele_name: r.kebele_name,
-    condition: r.condition, status: r.status,
-  })));
+  const point = (la, lo) => (la != null && lo != null ? [Number(la), Number(lo)] : null);
+  res.json(rows.map((r) => {
+    const gps = point(r.latitude, r.longitude);
+    const gpsOk = gps && latInJimma(gps[0]) && lngInJimma(gps[1]);
+    const kebele = point(r.kebele_lat, r.kebele_lng);
+    const kifle = point(r.kifle_lat, r.kifle_lng);
+    const [placed, at] = gpsOk ? ['GPS', gps] : kebele ? ['KEBELE', kebele] : kifle ? ['KIFLE_KETEMA', kifle] : ['CITY', config.jimmaCentre];
+    return {
+      id: r.id, asset_code: r.asset_code, name: r.name, latitude: at[0], longitude: at[1], placed,
+      gps_outside: Boolean(gps && !gpsOk), recorded_latitude: r.latitude, recorded_longitude: r.longitude,
+      category_name: r.category_name, sector_name: r.sector_name, kifle_ketema_name: r.kifle_ketema_name, kebele_name: r.kebele_name,
+      condition: r.condition, status: r.status,
+    };
+  }));
 });
 
 // ------------------------------------------------------------------ QR code / barcode / scanning
@@ -56,16 +71,41 @@ async function qrPayload(req, asset) {
   return `${base.replace(/\/$/, '')}/a/${await ensureToken(asset)}`;
 }
 
+// no-store: after a label is replaced, the page must draw the new code, never a cached copy of the old one
 router.get('/:id/qr.svg', async (req, res) => {
   const asset = await getVisibleAsset(req);
   const svg = await QRCode.toString(await qrPayload(req, asset), { type: 'svg', margin: 1, errorCorrectionLevel: 'M' });
-  res.type('image/svg+xml').send(svg);
+  res.set('Cache-Control', 'no-store').type('image/svg+xml').send(svg);
 });
 
 router.get('/:id/qr.png', async (req, res) => {
   const asset = await getVisibleAsset(req);
   const png = await QRCode.toBuffer(await qrPayload(req, asset), { margin: 1, width: 400, errorCorrectionLevel: 'M' });
-  res.type('image/png').send(png);
+  res.set('Cache-Control', 'no-store').type('image/png').send(png);
+});
+
+/**
+ * Replace a lost, damaged or stolen label: the asset gets a new public token, so the old label stops opening it and
+ * no longer counts as a scan of the asset. The old token is kept, so that scanning it says the label was cancelled.
+ */
+router.post('/:id/label/replace', guardAsset('asset.edit'), async (req, res) => {
+  const d = parse(z.object({ reason: oneOf(LABEL_REPLACE_REASONS, 'Reason'), note: optStr(500) }), req.body);
+  if (d.reason === 'OTHER' && !d.note) throw fail('note', 'Please explain why the label is replaced.');
+  const asset = req.asset;
+  if (!asset.public_token) throw conflict('This asset has no label yet. Print its label instead.');
+  const token = newToken();
+  await db.transaction(async (trx) => {
+    // only if nobody replaced it in the meantime
+    const updated = await trx('assets').where({ id: asset.id, public_token: asset.public_token }).update({ public_token: token, updated_at: db.fn.now() });
+    if (!updated) throw conflict('The label was just replaced by someone else. Reload the page.');
+    await trx('asset_retired_labels').insert({ asset_id: asset.id, token: asset.public_token, reason: d.reason, note: d.note, retired_by: req.user.id });
+    await logAudit(trx, req.user, {
+      action: 'LABEL_REPLACE', entity: 'asset', entityId: asset.id, assetId: asset.id,
+      summary: `${asset.asset_code}: QR label replaced (${d.reason.toLowerCase()}${d.note ? `: ${d.note}` : ''}); the old label no longer opens the asset`,
+      changes: { label: { reason: d.reason, note: d.note ?? null } },
+    });
+  });
+  res.json({ replaced: true });
 });
 
 const scanSchema = z.object({
@@ -78,11 +118,10 @@ const scanSchema = z.object({
 /** Resolve a scanned QR/barcode (an asset code, a public card address, or a URL ending in a code) and record the scan. */
 router.post('/scan', async (req, res) => {
   const d = parse(scanSchema, req.body);
-  const card = /\/a\/([A-Za-z0-9_-]{16,32})\/?$/.exec(d.code.trim());
-  const byToken = card ? await assetByToken(card[1]) : null;
-  const match = byToken ? [byToken.asset_code] : /AST-\d{6}/i.exec(d.code);
-  if (!match) throw fail('code', 'This is not a Jimma asset code.');
-  const asset = await findVisibleByCodeOrId(req.user, match[0]);
+  const label = await readLabel(d.code);
+  if (label?.retired) throw new HttpError(410, RETIRED_LABEL);
+  if (!label) throw fail('code', 'This is not a Jimma asset code.');
+  const asset = await findVisibleByCodeOrId(req.user, label.code);
   await db('scan_events').insert({ asset_id: asset.id, user_id: req.user.id, context: d.context, latitude: d.latitude, longitude: d.longitude });
   res.json(asset_(req.user)(await assetBase().where('assets.id', asset.id).first()));
 });
@@ -119,9 +158,9 @@ router.put('/:id/acquisition', guardAsset('asset.edit'), async (req, res) => {
 const assignmentSchema = z.object({
   sector_id: optIdRef,
   department_id: optIdRef,
-  office: optStr(200),
-  responsible_officer: optStr(160),
-  holder: optStr(200),
+  office: optNameText(200, 'Office'),
+  responsible_officer: optPersonName(160, 'Responsible officer'),
+  holder: optNameText(200, 'Holder'),
   holder_user_id: optIdRef,
   assigned_date: dateStr,
   reason: reqStr(500, 'A reason'),
@@ -160,7 +199,7 @@ router.get('/assignments/current', async (req, res) => {
     .orderBy('assets.asset_code');
   if (f.department_id) q.where('a.department_id', f.department_id);
   if (f.sector_id) q.where('a.sector_id', f.sector_id);
-  if (f.holder) q.where((b) => b.where('a.holder', 'like', `%${f.holder}%`).orWhere('a.responsible_officer', 'like', `%${f.holder}%`).orWhere('a.office', 'like', `%${f.holder}%`));
+  if (f.holder) q.where((b) => b.where('a.holder', 'like', likePattern(f.holder)).orWhere('a.responsible_officer', 'like', likePattern(f.holder)).orWhere('a.office', 'like', likePattern(f.holder)));
   res.json(await q.limit(500));
 });
 
@@ -168,7 +207,7 @@ router.get('/assignments/current', async (req, res) => {
 
 router.post('/:id/ownership-change', guardAsset('request.create'), async (req, res) => {
   const d = parse(z.object({
-    new_owner: reqStr(200, 'New owner'),
+    new_owner: reqNameText(200, 'New owner'),
     new_type: oneOf(OWNERSHIP_TYPES, 'Ownership type'),
     effective_date: dateStr,
     basis: reqStr(500, 'The legal basis or decision'),
@@ -186,7 +225,7 @@ const disposalSchema = z.object({
   method: z.preprocess((v) => v || null, oneOf(DISPOSAL_METHODS, 'Method').nullable()).default(null),
   disposal_date: dateStr,
   disposal_value: money,
-  recipient: optStr(200),
+  recipient: optNameText(200, 'Recipient'),
   notes: optStr(2000),
 });
 
@@ -203,27 +242,7 @@ router.post('/:id/disposal', guardAsset('request.create'), async (req, res) => {
 // ------------------------------------------------------------------ revenue linked to the asset
 
 router.post('/:id/revenues', guardAsset('financial.edit'), async (req, res) => {
-  const d = parse(z.object({
-    revenue_type: oneOf(REVENUE_TYPES, 'Revenue type'),
-    amount: reqMoney,
-    received_date: dateStr,
-    period_start: optDate,
-    period_end: optDate,
-    payer: optStr(200),
-    reference: optStr(120),
-    utilization_id: optIdRef,
-    notes: optStr(2000),
-  }), req.body);
-  if (d.period_start && d.period_end && d.period_end < d.period_start) throw fail('period_end', 'The period end cannot be before its start.');
-  if (d.utilization_id && !(await db('utilizations').where({ id: d.utilization_id, asset_id: req.asset.id }).first())) {
-    throw fail('utilization_id', 'This use does not belong to the asset.');
-  }
-  const [id] = await db('asset_revenues').insert({ ...d, asset_id: req.asset.id, recorded_by: req.user.id });
-  await logAudit(null, req.user, {
-    action: 'REVENUE_ADD', entity: 'revenue', entityId: id, assetId: req.asset.id,
-    summary: `${req.asset.asset_code}: ${d.revenue_type.toLowerCase()} income ${d.amount} ETB received ${d.received_date}`,
-  });
-  res.status(201).json(await db('asset_revenues').where({ id }).first());
+  res.status(201).json(await recordRevenue(req.user, req.asset, parse(revenueSchema, req.body)));
 });
 
 // ------------------------------------------------------------------ archive (disposed assets leave the working lists)
@@ -248,9 +267,24 @@ router.post('/:id/unarchive', guardAsset('asset.approve', { allowDisposed: true 
 // ------------------------------------------------------------------ follow-ups across the register
 
 router.get('/follow-ups/open', async (req, res) => {
-  res.json(await applyScope(db('follow_up_actions as f').join('assets', 'assets.id', 'f.asset_id'), req.user)
-    .where('f.status', 'OPEN').select('f.*', 'assets.asset_code', 'assets.name as asset_name')
-    .orderByRaw('f.due_date IS NULL, f.due_date').limit(500));
+  const f = parse(z.object({
+    q: z.string().trim().max(100).optional(),
+    status: z.preprocess((v) => v || undefined, z.enum(['OPEN', 'REPORTED']).optional()),
+    source_type: z.preprocess((v) => v || undefined, z.enum(['INSPECTION', 'VERIFICATION', 'MANUAL']).optional()),
+    due: z.preprocess((v) => v || undefined, z.enum(['overdue', 'week', 'none']).optional()),
+  }), req.query);
+  const q = applyScope(db('follow_up_actions as f').join('assets', 'assets.id', 'f.asset_id'), req.user)
+    .whereIn('f.status', f.status ? [f.status] : ['OPEN', 'REPORTED']).select('f.*', 'assets.asset_code', 'assets.name as asset_name')
+    .orderByRaw('f.due_date IS NULL, f.due_date').limit(500);
+  if (f.q) {
+    q.where((b) => b.where('assets.asset_code', 'like', likePattern(f.q)).orWhere('assets.name', 'like', likePattern(f.q))
+      .orWhere('f.description', 'like', likePattern(f.q)).orWhere('f.assigned_to', 'like', likePattern(f.q)));
+  }
+  if (f.source_type) q.where('f.source_type', f.source_type);
+  if (f.due === 'overdue') q.whereRaw('f.due_date < CURDATE()');
+  if (f.due === 'week') q.whereRaw('f.due_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 7 DAY)');
+  if (f.due === 'none') q.whereNull('f.due_date');
+  res.json(await q);
 });
 
 // ------------------------------------------------------------------ duplicates

@@ -2,6 +2,7 @@ import { db } from '../db.js';
 import { accessResolver, getRule, notify } from './notify.js';
 import { hasAllScope } from './permissions.js';
 import { remindMonthlyReports } from './monthlyReports.js';
+import { inspectionsDue } from './inspections.js';
 
 const iso = (d) => d.toISOString().slice(0, 10);
 const plusDays = (days, from = new Date()) => iso(new Date(from.getTime() + days * 86400000));
@@ -51,28 +52,20 @@ export async function runAlertScan(now = new Date()) {
     }
   }
 
-  // inspections
+  // inspections: the next date of the latest inspection, or the first inspection of an asset in use never inspected
   const inspRule = await getRule('INSPECTION_DUE');
   if (inspRule.enabled) {
-    const rows = await live(db('inspection_records as i').join('assets', 'assets.id', 'i.asset_id'))
-      .whereNotNull('i.next_inspection_date').select('i.id as record_id', 'i.asset_id', 'i.inspection_date', 'i.next_inspection_date', ...assetCols);
-    const latest = new Map();
-    for (const r of rows) {
-      const cur = latest.get(r.asset_id);
-      if (!cur || r.inspection_date > cur.inspection_date || (r.inspection_date === cur.inspection_date && r.record_id > cur.record_id)) latest.set(r.asset_id, r);
-    }
     const horizon = plusDays(inspRule.lead_days ?? 14, now);
-    for (const r of latest.values()) {
-      if (r.next_inspection_date <= horizon) {
+    for (const r of await inspectionsDue((q) => q, assetCols)) {
+      if (r.due <= horizon) {
+        const key = `INSP:${r.record_id ?? `FIRST-${r.asset_id}`}:${r.due}`;
         await raise('INSPECTION_DUE', r, 'inspection.record', {
-          title: `${r.asset_code}: inspection ${r.next_inspection_date < today ? 'overdue since' : 'due'} ${r.next_inspection_date}`, body: r.name,
-          dedupeKey: `INSP:${r.record_id}:${r.next_inspection_date}`,
+          title: `${r.asset_code}: inspection ${r.due < today ? 'overdue since' : 'due'} ${r.due}`, body: r.name, dedupeKey: key,
         });
         // an overdue inspection is also reported to whoever follows the Inspectors of that area (the Kifle Ketema Administrator)
-        if (r.next_inspection_date < today) {
+        if (r.due < today) {
           await raise('INSPECTION_DUE', r, 'inspection.oversee', {
-            title: `${r.asset_code}: inspection overdue since ${r.next_inspection_date}`, body: r.name,
-            dedupeKey: `INSP:${r.record_id}:${r.next_inspection_date}:OVERDUE`,
+            title: `${r.asset_code}: inspection overdue since ${r.due}`, body: r.name, dedupeKey: `${key}:OVERDUE`,
           }, { areaOnly: true });
         }
       }

@@ -4,19 +4,15 @@ import { db } from '../db.js';
 import { config } from '../config.js';
 import { authenticate } from '../middleware/auth.js';
 import { conflict, forbidden, notFound, parse } from '../middleware/errors.js';
-import { applyScope, has, scopedAsset } from '../lib/permissions.js';
+import { applyScope, has, hasAllScope, inScope, scopedAsset } from '../lib/permissions.js';
 import { logAudit } from '../lib/audit.js';
 import { fail } from '../lib/assetGuards.js';
 import { notifyAsset, notifyUser } from '../lib/notify.js';
-import { RESERVATION_STATUSES } from '../lib/constants.js';
-import { idRef, oneOf, optStr, reqStr } from '../lib/schemas.js';
+import { RESERVATION_STATUSES, ROLES } from '../lib/constants.js';
+import { idRef, oneOf, optPersonName, optStr, reqStr, dateTimeStr, likePattern } from '../lib/schemas.js';
 
 const router = Router();
 router.use(authenticate);
-
-const dateTime = z.string({ error: 'A date and time is required.' })
-  .regex(/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?$/, 'Use the format YYYY-MM-DD HH:MM.')
-  .transform((s) => `${s.replace('T', ' ')}${s.length === 16 ? ':00' : ''}`);
 
 const UNAVAILABLE = ['DISPOSED', 'RETIRED', 'LOST', 'DAMAGED', 'UNDER_MAINTENANCE', 'PLANNED'];
 
@@ -29,7 +25,21 @@ const overlapping = (assetId, start, end, statuses, exceptId = null) => {
 };
 
 const withNames = (q) => q.join('assets', 'assets.id', 'r.asset_id').leftJoin('users as u', 'u.id', 'r.requested_by')
-  .select('r.*', 'assets.asset_code', 'assets.name as asset_name', 'u.full_name as requested_by_name');
+  .select('r.*', 'assets.asset_code', 'assets.name as asset_name', 'u.full_name as requested_by_name',
+    'assets.kifle_ketema_id', 'assets.kebele_id', 'assets.sector_id');
+
+/**
+ * The assets a user may book: those of its own area and, for a Sector Administrator, also the reservable assets of the
+ * other sectors of its own Kebele (a hall or a vehicle is lent across sectors). The keeper of the asset decides.
+ */
+function bookable(qb, user) {
+  if (user.role !== ROLES.SECTOR_ADMIN || !user.scope.kebeles.length) return applyScope(qb, user);
+  return qb.where((b) => b.where((own) => { applyScope(own, user); })
+    .orWhere((shared) => shared.where('assets.is_reservable', 1).whereIn('assets.kebele_id', user.scope.kebeles)));
+}
+
+/** A user sees the reservations of its own area, and the ones it asked for itself (of another sector's asset). */
+const visible = (q, user) => (hasAllScope(user) ? q : q.where((b) => b.where((s) => { applyScope(s, user); }).orWhere('r.requested_by', user.id)));
 
 router.get('/', async (req, res) => {
   const f = parse(z.object({
@@ -38,8 +48,10 @@ router.get('/', async (req, res) => {
     mine: z.enum(['1']).optional(),
     from: z.string().optional(),
     to: z.string().optional(),
+    q: z.string().trim().max(100).optional(),
   }), req.query);
-  const q = applyScope(withNames(db('asset_reservations as r')), req.user).orderBy('r.start_at', 'desc').limit(300);
+  const q = visible(withNames(db('asset_reservations as r')), req.user).orderBy('r.start_at', 'desc').limit(300);
+  if (f.q) q.where((b) => b.where('assets.asset_code', 'like', likePattern(f.q)).orWhere('assets.name', 'like', likePattern(f.q)).orWhere('r.purpose', 'like', likePattern(f.q)).orWhere('r.requester_name', 'like', likePattern(f.q)));
   if (f.asset_id) q.where('r.asset_id', f.asset_id);
   if (f.status) q.where('r.status', f.status);
   if (f.mine) q.where('r.requested_by', req.user.id);
@@ -48,6 +60,7 @@ router.get('/', async (req, res) => {
   const rows = await q;
   res.json(rows.map((r) => ({
     ...r,
+    can_open_asset: inScope(req.user, r),
     can_decide: has(req.user, 'reservation.decide') && r.status === 'PENDING' && !(config.separationOfDuties && r.requested_by === req.user.id),
     can_cancel: ['PENDING', 'APPROVED'].includes(r.status) && (r.requested_by === req.user.id || has(req.user, 'reservation.decide')),
   })));
@@ -55,11 +68,13 @@ router.get('/', async (req, res) => {
 
 /** Reservable assets with whether each one is free in the window. */
 router.get('/availability', async (req, res) => {
-  const f = parse(z.object({ start_at: dateTime, end_at: dateTime }), req.query);
+  const f = parse(z.object({ start_at: dateTimeStr, end_at: dateTimeStr }), req.query);
   if (f.end_at <= f.start_at) throw fail('end_at', 'The end must be after the start.');
-  const assets = await applyScope(db('assets'), req.user).where('assets.is_reservable', 1).whereNull('assets.archived_at')
-    .whereNotIn('assets.status', UNAVAILABLE)
-    .select('assets.id', 'assets.asset_code', 'assets.name', 'assets.status', 'assets.location_detail').orderBy('assets.asset_code');
+  const assets = await bookable(db('assets'), req.user).where('assets.is_reservable', 1).whereNull('assets.archived_at')
+    .whereNotIn('assets.status', UNAVAILABLE).leftJoin('sectors', 'sectors.id', 'assets.sector_id')
+    .select('assets.id', 'assets.asset_code', 'assets.name', 'assets.status', 'assets.location_detail', 'assets.kifle_ketema_id',
+      'assets.kebele_id', 'assets.sector_id', 'sectors.name as sector_name')
+    .orderBy('assets.asset_code');
   const busy = assets.length
     ? await db('asset_reservations').whereIn('asset_id', assets.map((a) => a.id)).whereIn('status', ['PENDING', 'APPROVED'])
       .where('start_at', '<', f.end_at).where('end_at', '>', f.start_at)
@@ -68,6 +83,7 @@ router.get('/availability', async (req, res) => {
     const holds = busy.filter((b) => b.asset_id === a.id);
     return {
       ...a,
+      own: inScope(req.user, a), // an asset of another sector is only offered for booking, its record stays closed
       available: !holds.some((h) => h.status === 'APPROVED'),
       pending_requests: holds.filter((h) => h.status === 'PENDING').length,
       reserved: holds.filter((h) => h.status === 'APPROVED').map((h) => ({ start_at: h.start_at, end_at: h.end_at, purpose: h.purpose })),
@@ -78,10 +94,10 @@ router.get('/availability', async (req, res) => {
 router.post('/', async (req, res) => {
   if (!has(req.user, 'reservation.request')) throw forbidden('Your role cannot request reservations.');
   const d = parse(z.object({
-    asset_id: idRef, start_at: dateTime, end_at: dateTime, purpose: reqStr(500, 'The purpose'), requester_name: optStr(200),
+    asset_id: idRef, start_at: dateTimeStr, end_at: dateTimeStr, purpose: reqStr(500, 'The purpose'), requester_name: optPersonName(200, 'Requester name'),
   }), req.body);
-  const asset = await scopedAsset(req.user, d.asset_id);
-  if (!asset) throw notFound('Asset not found.');
+  const asset = await bookable(db('assets').where('assets.id', d.asset_id), req.user).first();
+  if (!asset) throw notFound('Asset not found, or it is outside your area.');
   if (!asset.is_reservable) throw fail('asset_id', 'This asset cannot be reserved. An administrator can mark it as reservable.');
   if (UNAVAILABLE.includes(asset.status)) throw conflict(`This asset is ${asset.status.toLowerCase().replace('_', ' ')} and cannot be reserved.`);
   if (d.end_at <= d.start_at) throw fail('end_at', 'The end must be after the start.');
@@ -153,7 +169,8 @@ router.post('/:id/reject', async (req, res) => {
 router.post('/:id/cancel', async (req, res) => {
   const r = await db('asset_reservations').where({ id: req.params.id }).first();
   if (!r) throw notFound('Reservation not found.');
-  const asset = await scopedAsset(req.user, r.asset_id);
+  // the requester may withdraw its own request even for another sector's asset; an approver only in its own area
+  const asset = r.requested_by === req.user.id ? await db('assets').where({ id: r.asset_id }).first() : await scopedAsset(req.user, r.asset_id);
   if (!asset) throw notFound('Reservation not found.');
   if (r.requested_by !== req.user.id && !has(req.user, 'reservation.decide')) throw forbidden('Only the requester or an approver can cancel a reservation.');
   if (!['PENDING', 'APPROVED'].includes(r.status)) throw conflict(`This reservation is already ${r.status.toLowerCase()}.`);

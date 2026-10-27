@@ -41,6 +41,48 @@ describe('new roles, customisable permissions and financial privacy', () => {
     assert.equal(officer.valuations.length, 1);
   });
 
+  it('shows a Kifle Ketema Administrator how long approvals wait and which assets need maintenance; reservations are decided below it', async () => {
+    const svc = (a, next) => api('post', `/api/assets/${a.id}/maintenance`, fx.users.officer)
+      .send({ maintenance_date: '2026-01-10', maintenance_type: 'Service', next_maintenance_date: next }).expect(201);
+    const due = await createAsset(fx, fx.users.officer, { name: 'Overdue roller' });
+    const later = await createAsset(fx, fx.users.officer, { name: 'Serviced roller' });
+    await svc(due, '2026-02-01');
+    await svc(later, new Date(Date.now() + 200 * 86400000).toISOString().slice(0, 10));
+    const ids = (await api('get', '/api/assets?maintenance=due&page_size=100', fx.users.jirenAdmin).expect(200)).body.rows.map((r) => r.id);
+    assert.ok(ids.includes(due.id) && !ids.includes(later.id));
+    await api('get', '/api/assets?maintenance=soon', fx.users.jirenAdmin).expect(400);
+    // the waiting times on its tiles: registrations to approve and requests to decide, apart
+    const kifle = (await api('get', '/api/dashboard', fx.users.jirenAdmin).expect(200)).body.totals;
+    assert.ok('oldest_approval_days' in kifle && 'oldest_request_days' in kifle);
+    assert.equal((await api('get', '/api/dashboard', fx.users.officer).expect(200)).body.totals.oldest_approval_days, null); // not an approver
+    assert.ok(!DEFAULT_ROLE_PERMISSIONS.KIFLE_ADMIN.includes('reservation.decide'));
+    assert.ok(DEFAULT_ROLE_PERMISSIONS.KEBELE_ADMIN.includes('reservation.decide'));
+  });
+
+  it('the Super Administrator runs the platform and does not see money; the Mayor does', async () => {
+    await api('get', '/api/finance/overview', fx.users.super).expect(403);
+    await api('get', '/api/finance/valuations', fx.users.super).expect(403);
+    const detail = (await api('get', `/api/assets/${asset.id}`, fx.users.super).expect(200)).body;
+    assert.equal(detail.asset.acquisition_cost, null);
+    assert.deepEqual(detail.valuations, []);
+    assert.equal(detail.permissions.can_view_financial, false);
+    await api('get', '/api/finance/overview', fx.users.mayor).expect(200);
+  });
+
+  it('leaves analysis and field work to those who do it, and warns the Super Administrator of what blocks them', async () => {
+    await api('get', '/api/analytics', fx.users.super).expect(403);
+    await api('get', '/api/dashboard/performance', fx.users.super).expect(403);
+    await api('get', '/api/verification', fx.users.super).expect(403);
+    await api('get', '/api/dashboard/performance', fx.users.mayor).expect(200);
+    // a Kebele that loses its administrator can no longer verify what is registered there
+    const without = async () => (await api('get', '/api/dashboard', fx.users.super).expect(200)).body.setup.kebeles_without_admin;
+    const before = await without();
+    await db('users').where({ id: fx.users.kebeleC.id }).update({ is_active: 0 });
+    assert.equal(await without(), before + 1);
+    await db('users').where({ id: fx.users.kebeleC.id }).update({ is_active: 1 });
+    assert.equal(await without(), before);
+  });
+
   it('keeps purchase documents, invoices and contracts from people who cannot see money', async () => {
     const up = (user, type) => api('post', `/api/assets/${asset.id}/documents`, user).field('doc_type', type).field('title', 'Doc')
       .attach('file', Buffer.from('%PDF-1.4 x'), { filename: 'a.pdf', contentType: 'application/pdf' });
@@ -227,11 +269,9 @@ describe('assignment, responsibility history and ownership change', () => {
     await api('post', `/api/assets/${asset.id}/ownership-change`, fx.users.officer).send({ ...body, basis: '' }).expect(400);
     const req = await api('post', `/api/assets/${asset.id}/ownership-change`, fx.users.officer).send(body).expect(202);
     const id = req.body.request.id;
-    // two different people decide: here the Kebele Administrator reviews and the Kifle Ketema Administrator approves
-    await allow(fx, 'KEBELE_ADMIN', 'request.decide');
+    // two different people decide: the Kebele Administrator reviews and the Kifle Ketema Administrator approves
     await api('post', `/api/requests/${id}/review`, fx.users.kebeleA).expect(200);
     await api('post', `/api/requests/${id}/approve`, fx.users.jirenAdmin).expect(200);
-    await restore(fx, 'KEBELE_ADMIN');
     const d = (await api('get', `/api/assets/${asset.id}`, fx.users.officer)).body;
     assert.equal(d.asset.owner_name, 'Oromia Regional Government');
     assert.equal(d.ownership_history.length, 1);
@@ -277,8 +317,18 @@ describe('approval requests: workflow rules and rejection', () => {
     await api('post', `/api/requests/${req.body.request.id}/approve`, fx.users.jirenAdmin).expect(404);
     const list = (await api('get', '/api/requests?open=1', fx.users.jirenAdmin)).body;
     assert.ok(!list.some((r) => r.id === req.body.request.id));
+    // the Kebele Administrator of the asset's Kebele reviews it first, then the Kifle Ketema Administrator of its area approves
+    const atKebele = (await api('get', '/api/requests?open=1', fx.users.kebeleC)).body.find((r) => r.id === req.body.request.id);
+    assert.equal(atKebele.can_review, true);
+    assert.equal(atKebele.can_approve, false);
+    assert.equal((await api('get', '/api/requests?open=1', fx.users.kebeleA)).body.some((r) => r.id === req.body.request.id), false);
     const mine = (await api('get', '/api/requests?open=1', fx.users.hirmataAdmin)).body.find((r) => r.id === req.body.request.id);
-    assert.equal(mine.can_approve, true);
+    assert.equal(mine.can_review, false);
+    assert.equal(mine.can_approve, false, 'not reviewed yet');
+    await api('post', `/api/requests/${req.body.request.id}/review`, fx.users.kebeleC).expect(200);
+    const reviewed = (await api('get', '/api/requests?open=1', fx.users.hirmataAdmin)).body.find((r) => r.id === req.body.request.id);
+    assert.equal(reviewed.can_approve, true);
+    assert.equal(reviewed.reviewed_by_name, 'Test kebelec');
     assert.equal((await api('get', '/api/requests?open=1', fx.users.sectorAdmin)).body.find((r) => r.id === req.body.request.id).can_approve, false, 'the requester does not decide');
   });
 
@@ -291,6 +341,9 @@ describe('approval requests: workflow rules and rejection', () => {
     assert.equal(back.body.request.status, 'PENDING');
     await api('post', `/api/requests/${back.body.request.id}/approve`, fx.users.jirenAdmin).expect(409); // two steps: review first
     await api('put', '/api/admin/workflows/TRANSFER', fx.users.super).send({ requires_approval: true, steps: 1 }).expect(200);
+    await api('post', `/api/requests/${back.body.request.id}/review`, fx.users.kebeleB).expect(409); // one step: nothing to review
+    await api('post', `/api/requests/${back.body.request.id}/approve`, fx.users.jirenAdmin).expect(200);
+    await api('put', '/api/admin/workflows/TRANSFER', fx.users.super).send({ requires_approval: true, steps: 2 }).expect(200);
   });
 });
 
@@ -301,7 +354,8 @@ describe('reservations', () => {
     van = await createAsset(fx, fx.users.officer, { name: 'Meeting hall', is_reservable: true });
     await activateAsset(fx, van);
     fixed = await createAsset(fx, fx.users.officer, { name: 'Not for hire' });
-    requester = fx.users.inspector; // may ask for a reservation, may not decide one
+    // the Business & Trade Sector Administrator of the same Kebele may book the hall, and only the hall's keeper decides
+    requester = await makeUser('booker_a', 'SECTOR_ADMIN', { sectors: [fx.business.id], kebeles: [fx.k1] });
   });
   const book = (user, start, end, asset = van) => api('post', '/api/reservations', user).send({ asset_id: asset.id, start_at: start, end_at: end, purpose: 'Staff meeting' });
 
@@ -314,8 +368,32 @@ describe('reservations', () => {
     await book(fx.users.officer, '2030-03-01 10:00', '2030-03-01 09:00').expect(400); // ends before it starts
   });
 
+  it('a Sector Administrator books a reservable asset of another sector of its Kebele; the keeper decides', async () => {
+    // the Business & Trade Sector Administrator of Kebele A cannot see the Construction records, but may book the hall
+    const trade = await makeUser('trade_a', 'SECTOR_ADMIN', { sectors: [fx.business.id], kebeles: [fx.k1] });
+    await api('get', `/api/assets/${van.id}`, trade).expect(404);
+    const offered = (await api('get', '/api/reservations/availability?start_at=2030-07-01T09:00&end_at=2030-07-01T10:00', trade)).body;
+    assert.equal(offered.find((a) => a.id === van.id)?.own, false);
+    assert.ok(!offered.some((a) => a.id === fixed.id), 'only reservable assets of other sectors are offered');
+    const asked = await api('post', '/api/reservations', trade)
+      .send({ asset_id: van.id, start_at: '2030-07-01 09:00', end_at: '2030-07-01 10:00', purpose: 'Training', requester_name: 'Trade office' }).expect(201);
+    assert.equal(asked.body.requester_name, 'Trade office');
+    assert.equal(asked.body.requested_by_name, 'Test trade_a');
+    const mine = (await api('get', '/api/reservations?mine=1', trade)).body.find((r) => r.id === asked.body.id);
+    assert.equal(mine.can_open_asset, false);
+    assert.equal(mine.can_decide, false);
+    // the keeper (the Construction Sector Administrator of the hall) decides it
+    const waiting = (await api('get', '/api/reservations?status=PENDING', fx.users.officer)).body.find((r) => r.id === asked.body.id);
+    assert.equal(waiting.can_decide, true);
+    await api('post', `/api/reservations/${asked.body.id}/approve`, fx.users.officer).expect(200);
+    // another Kebele is out of reach, and the requester may still withdraw
+    const far = await makeUser('trade_c', 'SECTOR_ADMIN', { sectors: [fx.business.id], kebeles: [fx.k3] });
+    await api('post', '/api/reservations', far).send({ asset_id: van.id, start_at: '2030-07-02 09:00', end_at: '2030-07-02 10:00', purpose: 'x' }).expect(404);
+    await api('post', `/api/reservations/${asked.body.id}/cancel`, trade).expect(200);
+  });
+
   it('only reservable, usable assets can be reserved', async () => {
-    await book(requester, '2030-04-01 09:00', '2030-04-01 10:00', fixed).expect(400);
+    await book(fx.users.officer, '2030-04-01 09:00', '2030-04-01 10:00', fixed).expect(400); // its keeper sees it, and it is not for hire
     await api('patch', `/api/assets/${fixed.id}`, fx.users.officer).send({ is_reservable: true }).expect(200);
     await book(requester, '2030-04-01 09:00', '2030-04-01 10:00', fixed).expect(201);
     await api('post', `/api/assets/${fixed.id}/status`, fx.users.officer).send({ status: 'DAMAGED', reason: 'Broken' }).expect(200);
@@ -327,7 +405,7 @@ describe('reservations', () => {
     const list = (await api('get', '/api/reservations?status=PENDING', fx.users.kebeleA)).body;
     const target = list.find((r) => r.start_at.startsWith('2030-03-01 09:00'));
     assert.equal(target.can_decide, true);
-    await api('post', `/api/reservations/${target.id}/approve`, requester).expect(403);
+    await api('post', `/api/reservations/${target.id}/approve`, requester).expect(404); // another sector's hall: not the requester's to decide
     const own = await book(fx.users.kebeleA, '2030-05-01 09:00', '2030-05-01 10:00').expect(201);
     await api('post', `/api/reservations/${own.body.id}/approve`, fx.users.kebeleA).expect(409); // own request
     await api('post', `/api/reservations/${target.id}/reject`, fx.users.kebeleA).send({}).expect(400);
@@ -357,9 +435,10 @@ describe('retirement, disposal and archive', () => {
   let fx;
   before(async () => { fx = await setupFixture(); });
 
-  it('retires an asset with one approval, and a retired asset can then only be disposed of', async () => {
+  it('retires an asset after a review and an approval, and a retired asset can then only be disposed of', async () => {
     const a = await createAsset(fx, fx.users.officer);
     const req = await api('post', `/api/assets/${a.id}/disposal`, fx.users.officer).send({ kind: 'RETIREMENT', reason: 'Worn out', disposal_date: '2026-07-01' }).expect(202);
+    await api('post', `/api/requests/${req.body.request.id}/review`, fx.users.kebeleA).expect(200);
     await api('post', `/api/requests/${req.body.request.id}/approve`, fx.users.jirenAdmin).expect(200);
     assert.equal((await db('assets').where({ id: a.id }).first()).status, 'RETIRED');
     await api('post', `/api/assets/${a.id}/status`, fx.users.officer).send({ status: 'ACTIVE', reason: 'back' }).expect(409);
@@ -367,10 +446,8 @@ describe('retirement, disposal and archive', () => {
     const disp = await api('post', `/api/assets/${a.id}/disposal`, fx.users.officer).send({
       kind: 'DISPOSAL', reason: 'Sold at auction', method: 'SALE', disposal_date: '2026-08-01', disposal_value: 45000, recipient: 'Mr. Buyer',
     }).expect(202);
-    await allow(fx, 'KEBELE_ADMIN', 'request.decide'); // a disposal needs two different people to decide
-    await api('post', `/api/requests/${disp.body.request.id}/review`, fx.users.kebeleA).expect(200);
+    await api('post', `/api/requests/${disp.body.request.id}/review`, fx.users.kebeleA).expect(200); // a disposal needs two different people
     await api('post', `/api/requests/${disp.body.request.id}/approve`, fx.users.jirenAdmin).expect(200);
-    await restore(fx, 'KEBELE_ADMIN');
     const d = (await api('get', `/api/assets/${a.id}`, fx.users.officer)).body;
     assert.equal(d.asset.status, 'DISPOSED');
     assert.equal(d.disposals.length, 2);

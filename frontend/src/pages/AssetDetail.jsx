@@ -1,13 +1,16 @@
 import { useEffect, useState } from 'react';
-import { Link, useParams, useSearchParams } from 'react-router-dom';
-import { api, download } from '../api.js';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { api, download, fetchObjectUrl } from '../api.js';
 import { sendOrQueue } from '../offline.js';
 import { useLookups } from '../lookups.jsx';
+import { useAuth } from '../auth.jsx';
+import { can } from '../permissions.js';
 import { bytes, date, dateTime, etb, label, nowLocal, today } from '../format.js';
 import {
-  Alert, Badge, Loading, Modal, PageHeader, Row, SpecForm, Table, Tabs, Empty, enumOpt, opt, useAsync,
+  Alert, Badge, ConfirmDialog, Loading, Modal, PageHeader, Row, SpecForm, Table, Tabs, Empty, enumOpt, opt, useAsync,
 } from '../components/ui.jsx';
 import AuthImage from '../components/AuthImage.jsx';
+import NavIcon from '../components/NavIcon.jsx';
 import SiteCheck, { SiteEvidence } from '../components/SiteCheck.jsx';
 import { t } from '../i18n.jsx';
 
@@ -22,10 +25,15 @@ const place = (kifle, kebele, detail) => (
   <>{kifle}{kebele ? ` / ${kebele}` : ''}{detail && <div className="muted small">{detail}</div>}</>
 );
 
+// files a browser can show in a tab; the rest (Word, Excel) are downloaded
+const VIEWABLE = /^(application\/pdf|image\/)/;
+
 export default function AssetDetail() {
   const { id } = useParams();
   const lk = useLookups();
+  const { user: me } = useAuth();
   const [search, setSearch] = useSearchParams();
+  const navigate = useNavigate();
   const { data, error, loading, reload } = useAsync(() => api.get(`/assets/${id}`), [id]);
   const [tab, setTab] = useState('overview');
   const [modal, setModal] = useState(null);
@@ -50,7 +58,7 @@ export default function AssetDetail() {
   const {
     asset: a, utilizations, maintenance, inspections, transfers, documents, valuations, history, permissions: perm,
     acquisition, assignments, ownership_history: ownership, disposals, follow_ups: followUps, revenues, reservations, requests, depreciation: dep,
-    site_checks: siteChecks = [], site_check_max_distance_m: maxDistance = 300,
+    site_checks: siteChecks = [], site_check_max_distance_m: maxDistance = 50, site_check_max_accuracy_m: maxAccuracy = 50,
   } = data;
   const path = `/assets/${id}`;
   const close = () => setModal(null);
@@ -89,6 +97,18 @@ export default function AssetDetail() {
     setActionError('');
     try { await fn(); setFlash(message); reload(); } catch (e) { setActionError(e.message); }
   }
+  /** Open a PDF or photo in a new tab. The tab opens at the click (so it is not blocked), the file follows. */
+  async function viewDocument(d) {
+    setActionError('');
+    const tab = window.open('', '_blank');
+    try {
+      const url = await fetchObjectUrl(`${path}/documents/${d.id}/download`);
+      if (tab) tab.location.href = url; else window.location.assign(url);
+    } catch (e) {
+      tab?.close();
+      setActionError(e.message);
+    }
+  }
   /** Save a request: either done at once (201) or waiting for an approver (202). */
   const requestDone = (okMessage) => async (res) => {
     close();
@@ -104,6 +124,21 @@ export default function AssetDetail() {
   const currentAssignment = assignments.find((x) => x.status === 'ACTIVE');
   const myUnlinked = lk.kebeles.filter((k) => !k.kifle_ketema_id);
   const linked = (rows) => rows.filter((k) => k.kifle_ketema_id);
+  // Where this person may move the asset: only places inside their own area (the server applies the same rule).
+  // A Sector Administrator works in one sector inside one Kebele. A Kebele Administrator sends assets on to any
+  // Kebele of its own Kifle Ketema; the Kifle Ketema Administrator approves.
+  const scope = me.scope || { kifle: [], kebeles: [], sectors: [] };
+  const everywhere = can.citywide(me);
+  const kebeleAdmin = !everywhere && me.role === 'KEBELE_ADMIN';
+  const kebeleBound = kebeleAdmin || (!everywhere && me.role === 'SECTOR_ADMIN' && scope.kebeles.length > 0);
+  const sectorBound = !everywhere && me.role === 'SECTOR_ADMIN';
+  const homeKifle = lk.kebeles.filter((k) => scope.kebeles.includes(k.id)).map((k) => k.kifle_ketema_id);
+  const toKebeles = linked(lk.activeOnly(lk.kebeles)).filter((k) => everywhere
+    || (kebeleAdmin ? homeKifle.includes(k.kifle_ketema_id)
+      : kebeleBound ? scope.kebeles.includes(k.id) : me.role === 'KIFLE_ADMIN' ? scope.kifle.includes(k.kifle_ketema_id) : true));
+  const toKifle = lk.activeOnly(lk.kifle).filter((k) => everywhere
+    || (kebeleBound ? toKebeles.some((b) => b.kifle_ketema_id === k.id) : me.role === 'KIFLE_ADMIN' ? scope.kifle.includes(k.id) : true));
+  const only = (rows) => (rows.length === 1 ? String(rows[0].id) : '');
 
   return (
     <>
@@ -143,12 +178,12 @@ export default function AssetDetail() {
         )}
         <div className="asset-head-main">
         <div className="actions" style={{ justifyContent: 'space-between' }}>
-          <div>
-            <span className="muted small">{t('Status')}{' '}</span><Badge value={a.status} />{' '}
-            <span className="muted small">{t('Condition')}{' '}</span><Badge value={a.condition} />{' '}
-            <span className="muted small">{t('Revenue')}{' '}</span>{a.generates_revenue ? <Badge value="GOOD" text="Generating revenue now" /> : <Badge value="DRAFT" text="No revenue use" />}
-            {a.is_reservable ? <> <Badge value="PENDING" text="Reservable" /></> : null}
-          </div>
+          <dl className="asset-facts">
+            <div><dt>{t('Status')}</dt><dd><Badge value={a.status} /></dd></div>
+            <div><dt>{t('Condition')}</dt><dd><Badge value={a.condition} /></dd></div>
+            <div><dt>{t('Revenue')}</dt><dd>{a.generates_revenue ? <Badge value="GOOD" text="Generating revenue now" /> : <Badge value="DRAFT" text="No revenue use" />}</dd></div>
+            {a.is_reservable ? <div><dt>{t('Reservation')}</dt><dd><Badge value="PENDING" text="Reservable" /></dd></div> : null}
+          </dl>
           <div className="actions">
             {perm.workflow.filter((w) => w !== 'reject').map((w) => (
               <button key={w} type="button" className="btn btn-primary" onClick={() => (w === 'review' ? setModal('sitecheck') : workflow(w))}>{t(WORKFLOW_LABELS[w])}</button>
@@ -156,9 +191,10 @@ export default function AssetDetail() {
             {perm.workflow.includes('reject') && <button type="button" className="btn" onClick={() => setModal('reject')}>{t(WORKFLOW_LABELS.reject)}</button>}
           </div>
         </div>
+        <p className="workflow-title">{t('Approval progress')}</p>
         <ol className="workflow" aria-label={t('Approval progress')} style={{ listStyle: 'none', padding: 0 }}>
           {STEPS.map((s, i) => (
-            <li key={s} className={`step${i < currentStep ? ' done' : ''}${i === currentStep ? ' current' : ''}`} aria-current={i === currentStep ? 'step' : undefined}>{label(s)}</li>
+            <li key={s} data-step={s} className={`step${i < currentStep ? ' done' : ''}${i === currentStep ? ' current' : ''}`} aria-current={i === currentStep ? 'step' : undefined}>{label(s)}</li>
           ))}
         </ol>
         </div>
@@ -217,7 +253,8 @@ export default function AssetDetail() {
               <div>
                 <p className="muted small" style={{ marginTop: 0 }}>{t("Print it and fix it to the asset. Any phone camera that scans it opens the asset's public card, with its photos and without money or personal details. In this system's scanner it opens this full record, for inspections and physical verification.")}</p>
                 <Link className="btn btn-small" to={`/labels?ids=${a.id}`}>{t('Print label')}</Link>{' '}
-                <Link className="btn btn-small" to="/scan">{t('Open scanner')}</Link>
+                <Link className="btn btn-small" to="/scan">{t('Open scanner')}</Link>{' '}
+                {perm.can_edit && <button type="button" className="btn btn-small" onClick={() => setModal('label')}>{t('Replace label')}</button>}
               </div>
             </div>
           </section>
@@ -306,7 +343,18 @@ export default function AssetDetail() {
                 <tr key={f.id}>
                   <td>{f.description}{f.resolution && <div className="muted small">{t('Done: {what}', { what: f.resolution })}</div>}</td>
                   <td>{date(f.due_date)}</td><td><Badge value={f.status} /></td><td>{label(f.source_type)}</td>
-                  <td>{f.status === 'OPEN' && (perm.can_edit || perm.can_inspect) && <button type="button" className="btn btn-small" onClick={() => setModal({ closeFollowUp: f })}>{t('Mark done')}</button>}</td>
+                  <td className="actions">
+                    {/* the keeper reports the work done; the Inspector or the Kebele Administrator checks it (a note of its own it closes itself) */}
+                    {f.status === 'OPEN' && (perm.can_check_follow_ups
+                      ? <button type="button" className="btn btn-small" onClick={() => setModal({ closeFollowUp: f })}>{t('Mark done')}</button>
+                      : perm.can_edit && <button type="button" className="btn btn-small" onClick={() => setModal({ closeFollowUp: f, report: f.source_type !== 'MANUAL' || f.created_by !== me.id })}>{t(f.source_type !== 'MANUAL' || f.created_by !== me.id ? 'Report done' : 'Mark done')}</button>)}
+                    {f.status === 'REPORTED' && (perm.can_check_follow_ups ? (
+                      <>
+                        <button type="button" className="btn btn-small btn-primary" onClick={() => act(() => api.post(`${path}/follow-ups/${f.id}/close`, {}), 'Follow-up checked and closed.')}>{t('Confirm done')}</button>
+                        <button type="button" className="btn btn-small" onClick={() => setModal({ reopenFollowUp: f })}>{t('Send back')}</button>
+                      </>
+                    ) : <span className="muted small">{t('Waiting for a check')}</span>)}
+                  </td>
                 </tr>
               ))}
             </Table>
@@ -418,9 +466,21 @@ export default function AssetDetail() {
                 <td>{d.title}{d.expires_on && <div className={`small ${d.expires_on < today() ? 'text-bad' : 'muted'}`}>{d.expires_on < today() ? t('Expired') : t('Expires')} {date(d.expires_on)}</div>}</td>
                 <td>{label(d.doc_type)}</td><td>{d.related_type ? label(d.related_type) : '—'}</td><td>{d.original_name}</td><td>{bytes(d.size_bytes)}</td>
                 <td>{dateTime(d.uploaded_at)}{d.uploaded_by_name && <div className="muted small">{d.uploaded_by_name}</div>}</td>
-                <td className="actions">
-                  <button type="button" className="btn btn-small" onClick={() => act(() => download(`${path}/documents/${d.id}/download`, d.original_name), 'Download started.')}>{t('Download')}</button>
-                  {perm.can_edit && <button type="button" className="btn btn-small" onClick={() => { if (window.confirm(t(`Remove "${d.title}"? This cannot be undone.`))) act(() => api.del(`${path}/documents/${d.id}`), 'Document removed.'); }}>{t('Remove')}</button>}
+                <td>
+                  {/* a PDF or a photo opens in the browser; every file can be downloaded; its keeper corrects or removes it */}
+                  <div className="actions row-actions">
+                    {VIEWABLE.test(d.mime_type || '') && (
+                      <button type="button" className="btn btn-small btn-icon-only" title={t('View')} aria-label={`${t('View')} ${d.title}`} onClick={() => viewDocument(d)}><NavIcon name="eye" /></button>
+                    )}
+                    <button type="button" className="btn btn-small btn-icon-only" title={t('Download')} aria-label={`${t('Download')} ${d.title}`}
+                      onClick={() => act(() => download(`${path}/documents/${d.id}/download`, d.original_name), 'Download started.')}><NavIcon name="download" /></button>
+                    {perm.can_edit && (
+                      <button type="button" className="btn btn-small btn-icon-only" title={t('Edit')} aria-label={`${t('Edit')} ${d.title}`} onClick={() => setModal({ editDocument: d })}><NavIcon name="edit" /></button>
+                    )}
+                    {perm.can_edit && (
+                      <button type="button" className="btn btn-small btn-cancel btn-icon-only" title={t('Remove')} aria-label={`${t('Remove')} ${d.title}`} onClick={() => setModal({ removeDocument: d })}><NavIcon name="trash" /></button>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}
@@ -443,7 +503,7 @@ export default function AssetDetail() {
                 <dl className="dl">
                   <dt>{t('Method')}</dt><dd>{label(dep.method)}</dd>
                   <dt>{t('Per year')}</dt><dd>{etb(dep.annual)}</dd>
-                  <dt>{t('Years in service')}</dt><dd>{dep.years_elapsed} of {a.useful_life_years}</dd>
+                  <dt>{t('Years in service')}</dt><dd>{t('{a} of {b}', { a: dep.years_elapsed, b: a.useful_life_years })}</dd>
                   <dt>{t('Accumulated')}</dt><dd>{etb(dep.accumulated)}</dd>
                   <dt>{t('Book value now')}</dt><dd><strong>{etb(dep.book_value)}</strong>{dep.fully_depreciated && <> <Badge value="POOR" text="Fully depreciated" /></>}</dd>
                 </dl>
@@ -520,7 +580,10 @@ export default function AssetDetail() {
 
       {tab === 'history' && (
         <section className="card">
-          <h2>{t('Complete history')}</h2>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
+            <h2 style={{ margin: 0 }}>{t('Complete history')}</h2>
+            <Link className="btn btn-small" to={`/assets/${a.id}/history`}>{t('Open as full page')}</Link>
+          </div>
           {history.length === 0 ? <Empty>{t('No history yet.')}</Empty> : (
             <ul className="timeline">
               {history.map((h) => {
@@ -541,8 +604,8 @@ export default function AssetDetail() {
       {/* ------------------------------------------------------------ modals */}
 
       {m('sitecheck') && (
-        <Modal title="Verify on site" onClose={close} wide>
-          <SiteCheck asset={a} maxDistance={maxDistance} onCancel={close} onDone={done('Verified on site. It now waits for the Kifle Ketema Administrator\'s approval.')} />
+        <Modal title="Verify on site" onClose={close}>
+          <SiteCheck asset={a} maxDistance={maxDistance} maxAccuracy={maxAccuracy} onCancel={close} onDone={done('Verified on site. It now waits for the Kifle Ketema Administrator\'s approval.')} />
         </Modal>
       )}
       {m('reject') && (
@@ -550,8 +613,22 @@ export default function AssetDetail() {
           <p>{t('The submitter will need to correct the asset and submit it again.')}</p>
           <SpecForm
             submitLabel="Send back" danger onCancel={close}
-            fields={[{ name: 'comment', label: 'Reason', type: 'textarea', required: true, wide: true }]}
+            fields={[{ name: 'comment', label: 'Reason', type: 'textarea', required: true, wide: true, maxLength: 500 }]}
             onSubmit={async (v) => { await api.post(`${path}/workflow`, { action: 'reject', comment: v.comment }); await done('Sent back to draft.')(); }}
+          />
+        </Modal>
+      )}
+
+      {m('label') && (
+        <Modal title="Replace label" onClose={close}>
+          <p className="muted small">{t('Use this when the label is lost, damaged or stolen. The asset gets a new QR code at once: the old label stops opening the asset and no longer counts when scanned. Then print the new label and fix it to the asset.')}</p>
+          <SpecForm
+            submitLabel="Replace label" danger onCancel={close}
+            fields={[
+              { name: 'reason', label: 'Reason', type: 'select', required: true, options: [{ value: '', label: 'Choose…' }, ...enumOpt(lk.enums.label_replace_reasons)] },
+              { name: 'note', label: 'Explanation', type: 'textarea', wide: true, maxLength: 500 },
+            ]}
+            onSubmit={async (v) => { await api.post(`${path}/label/replace`, v); navigate(`/labels?ids=${a.id}`); }}
           />
         </Modal>
       )}
@@ -563,7 +640,7 @@ export default function AssetDetail() {
             submitLabel="Change status" onCancel={close}
             fields={[
               { name: 'status', label: 'New status', type: 'select', required: true, options: [{ value: '', label: 'Choose…' }, ...enumOpt(usable)] },
-              { name: 'reason', label: 'Reason', type: 'textarea', required: true, wide: true },
+              { name: 'reason', label: 'Reason', type: 'textarea', required: true, wide: true, maxLength: 500 },
             ]}
             onSubmit={async (v) => { await api.post(`${path}/status`, v); await done('Status changed.')(); }}
           />
@@ -573,24 +650,31 @@ export default function AssetDetail() {
       {m('transfer') && (
         <Modal title="Transfer asset" onClose={close} wide>
           <p className="muted small">{t('Currently at {place}. You can only transfer to places inside your own assigned area. Transfers normally wait for an approver.', { place: `${a.kifle_ketema_name}${a.kebele_name ? ` / ${a.kebele_name}` : ''}${a.location_detail ? `, ${a.location_detail}` : ''}` })}</p>
+          {sectorBound && kebeleBound && toKebeles.length === 1 && (
+            <p className="muted small">{t('You work in {kebele} Kebele, so the asset moves to another building, place or holder there. To move it to another Kebele or sector, ask your Kebele Administrator.', { kebele: t(toKebeles[0].name) })}</p>
+          )}
+          {kebeleAdmin && (
+            <p className="muted small">{t('As Kebele Administrator you can send the asset to any Kebele of your Kifle Ketema, or to another sector. Your request counts as the review and goes straight to the Kifle Ketema Administrator for approval.')}</p>
+          )}
           <SpecForm
-            submitLabel="Submit transfer" onCancel={close} initial={{ transfer_date: today() }}
+            submitLabel="Submit transfer" onCancel={close} initial={{ transfer_date: today(), to_kifle_ketema_id: only(toKifle), to_kebele_id: only(toKebeles) }}
             fields={[
-              { name: 'to_kifle_ketema_id', label: 'To Kifle Ketema', type: 'select', required: true, options: () => opt(lk.activeOnly(lk.kifle), undefined, { blank: 'Choose…' }),
+              { name: 'to_kifle_ketema_id', label: 'To Kifle Ketema', type: 'select', required: true, fixedWhenSingle: true, options: () => opt(toKifle, undefined, { blank: 'Choose…' }),
                 derive: (value, v) => (v.to_kebele_id && String(kebeleKifle(v.to_kebele_id)) !== String(value) ? { to_kebele_id: '' } : {}) },
-              { name: 'to_kebele_id', label: 'To Kebele', type: 'select',
-                options: (v) => opt(linked(lk.activeOnly(lk.kebeles)).filter((k) => !v.to_kifle_ketema_id || String(k.kifle_ketema_id) === String(v.to_kifle_ketema_id)), undefined, { blank: 'Not recorded' }),
+              { name: 'to_kebele_id', label: 'To Kebele', type: 'select', required: kebeleBound, fixedWhenSingle: true,
+                options: (v) => opt(toKebeles.filter((k) => !v.to_kifle_ketema_id || String(k.kifle_ketema_id) === String(v.to_kifle_ketema_id)), undefined, { blank: kebeleBound ? 'Choose…' : 'Not recorded' }),
                 derive: (value) => (value ? { to_kifle_ketema_id: String(kebeleKifle(value) ?? '') } : {}) },
-              { name: 'to_location_detail', label: 'Specific location / building', wide: true },
-              { name: 'to_sector_id', label: 'New responsible sector (optional)', type: 'select', options: opt(activeSectors, undefined, { blank: 'Unchanged' }) },
+              { name: 'to_location_detail', label: 'Specific location / building', wide: true, maxLength: 255 },
+              // a Sector Administrator keeps the asset in its own sector
+              ...(sectorBound ? [] : [{ name: 'to_sector_id', label: 'New responsible sector (optional)', type: 'select', options: opt(activeSectors, undefined, { blank: 'Unchanged' }) }]),
               { name: 'transfer_date', label: 'Transfer date', type: 'date', required: true },
-              { name: 'new_holder', label: 'New holder (optional)' },
-              { name: 'reason', label: 'Reason', required: true, wide: true },
-              { name: 'authorized_by', label: 'Authorised by', required: true, wide: true, help: 'Person or office that approved the transfer. Attach any transfer letter under Documents afterwards.' },
+              { name: 'new_holder', label: 'New holder (optional)', kind: 'name' },
+              { name: 'reason', label: 'Reason', required: true, wide: true, maxLength: 500 },
+              { name: 'authorized_by', label: 'Authorised by', required: true, wide: true, kind: 'name', help: 'Person or office that approved the transfer. Attach any transfer letter under Documents afterwards.' },
             ]}
             onSubmit={async (v) => requestDone('Transfer recorded.')(await api.post(`${path}/transfers`, v))}
           />
-          {myUnlinked.length > 0 && <p className="muted small">{t('{n} Kebeles are not yet linked to a Kifle Ketema and are not offered here.', { n: myUnlinked.length })}</p>}
+          {!kebeleBound && myUnlinked.length > 0 && <p className="muted small">{t('{n} Kebeles are not yet linked to a Kifle Ketema and are not offered here.', { n: myUnlinked.length })}</p>}
         </Modal>
       )}
 
@@ -600,12 +684,12 @@ export default function AssetDetail() {
           <SpecForm
             submitLabel="Assign" onCancel={close} initial={{ assigned_date: today() }}
             fields={[
-              { name: 'sector_id', label: 'Sector', type: 'select', options: opt(activeSectors, undefined, { blank: 'Unchanged' }) },
-              { name: 'office', label: 'Office' },
-              { name: 'responsible_officer', label: 'Responsible officer' },
-              { name: 'holder', label: 'Employee / user who will hold it', wide: true },
+              ...(sectorBound ? [] : [{ name: 'sector_id', label: 'Sector', type: 'select', options: opt(activeSectors, undefined, { blank: 'Unchanged' }) }]),
+              { name: 'office', label: 'Office', kind: 'name' },
+              { name: 'responsible_officer', label: 'Responsible officer', kind: 'person', maxLength: 160 },
+              { name: 'holder', label: 'Employee / user who will hold it', wide: true, kind: 'name' },
               { name: 'assigned_date', label: 'Assignment date', type: 'date', required: true },
-              { name: 'reason', label: 'Reason', required: true, wide: true },
+              { name: 'reason', label: 'Reason', required: true, wide: true, maxLength: 500 },
             ]}
             onSubmit={async (v) => requestDone('Asset assigned.')(await api.post(`${path}/assignments`, v))}
           />
@@ -618,10 +702,10 @@ export default function AssetDetail() {
           <SpecForm
             submitLabel="Submit" onCancel={close} initial={{ effective_date: today(), new_type: a.ownership_type }}
             fields={[
-              { name: 'new_owner', label: 'New owner', required: true, wide: true },
+              { name: 'new_owner', label: 'New owner', required: true, wide: true, kind: 'name' },
               { name: 'new_type', label: 'Ownership', type: 'select', options: enumOpt(lk.enums.ownership_types) },
               { name: 'effective_date', label: 'Effective date', type: 'date', required: true },
-              { name: 'basis', label: 'Legal basis / decision', required: true, wide: true, type: 'textarea' },
+              { name: 'basis', label: 'Legal basis / decision', required: true, wide: true, type: 'textarea', maxLength: 500 },
             ]}
             onSubmit={async (v) => requestDone('Ownership changed.')(await api.post(`${path}/ownership-change`, v))}
           />
@@ -636,10 +720,10 @@ export default function AssetDetail() {
             fields={[
               { name: 'kind', label: 'What', type: 'select', required: true, options: [{ value: 'RETIREMENT', label: 'Retire (out of service)' }, { value: 'DISPOSAL', label: 'Dispose (end of life)' }] },
               { name: 'disposal_date', label: 'Date', type: 'date', required: true },
-              { name: 'reason', label: 'Reason', required: true, wide: true, type: 'textarea' },
+              { name: 'reason', label: 'Reason', required: true, wide: true, type: 'textarea', maxLength: 500 },
               { name: 'method', label: 'Disposal method', type: 'select', show: (v) => v.kind === 'DISPOSAL', options: [{ value: '', label: 'Choose…' }, ...enumOpt(lk.enums.disposal_methods)] },
               { name: 'disposal_value', label: 'Value received (ETB)', type: 'number', step: '0.01', min: '0', show: (v) => v.kind === 'DISPOSAL' },
-              { name: 'recipient', label: 'Buyer / recipient', wide: true, show: (v) => v.kind === 'DISPOSAL' },
+              { name: 'recipient', label: 'Buyer / recipient', wide: true, kind: 'name', show: (v) => v.kind === 'DISPOSAL' },
               { name: 'notes', label: 'Notes', type: 'textarea', wide: true },
             ]}
             onSubmit={async (v) => requestDone('Done.')(await api.post(`${path}/disposal`, v))}
@@ -650,11 +734,11 @@ export default function AssetDetail() {
       {m('reserve') && (
         <Modal title="Reserve asset" onClose={close}>
           <SpecForm
-            submitLabel="Request reservation" onCancel={close} initial={{ start_at: nowLocal(), end_at: nowLocal() }}
+            submitLabel="Request reservation" onCancel={close} initial={{ start_at: nowLocal(), end_at: nowLocal(60) }}
             fields={[
               { name: 'start_at', label: 'From', type: 'datetime-local', required: true },
-              { name: 'end_at', label: 'Until', type: 'datetime-local', required: true },
-              { name: 'purpose', label: 'Purpose', required: true, wide: true },
+              { name: 'end_at', label: 'Until', type: 'datetime-local', required: true, after: 'start_at' },
+              { name: 'purpose', label: 'Purpose', required: true, wide: true, maxLength: 500 },
             ]}
             onSubmit={async (v) => { await api.post('/reservations', { ...v, asset_id: a.id }); await done('Reservation requested. An approver will decide.')(); }}
           />
@@ -667,11 +751,11 @@ export default function AssetDetail() {
             submitLabel="Save use" onCancel={close} initial={{ start_date: today() }}
             fields={[
               { name: 'use_type', label: 'Use', type: 'select', required: true, options: [{ value: '', label: 'Choose…' }, ...enumOpt(lk.enums.use_types)] },
-              { name: 'user_party', label: 'Used by', help: 'Office, tenant, lessee, contractor, public…' },
+              { name: 'user_party', label: 'Used by', kind: 'name', help: 'Office, tenant, lessee, contractor, public…' },
               { name: 'start_date', label: 'From', type: 'date', required: true },
-              { name: 'end_date', label: 'To (leave empty if ongoing)', type: 'date' },
-              { name: 'purpose', label: 'Purpose', wide: true },
-              { name: 'authorization_basis', label: 'Authorisation', wide: true, help: 'Contract, council decision or legal basis for this use.' },
+              { name: 'end_date', label: 'To (leave empty if ongoing)', type: 'date', after: 'start_date' },
+              { name: 'purpose', label: 'Purpose', wide: true, maxLength: 2000 },
+              { name: 'authorization_basis', label: 'Authorisation', wide: true, maxLength: 255, help: 'Contract, council decision or legal basis for this use.' },
               { name: 'generates_revenue', type: 'checkbox', label: 'Revenue', checkLabel: 'This use generates revenue for the City', wide: true },
               { name: 'revenue_sector_id', label: 'Revenue classification (working label)', type: 'select', wide: true, show: (v) => v.generates_revenue,
                 options: [{ value: '', label: 'Not decided yet' }, ...opt(activeSectors)],
@@ -687,7 +771,7 @@ export default function AssetDetail() {
           <p>{t('{use}{party}, since {date}.', { use: label(modal.endUse.use_type), party: modal.endUse.user_party ? ` ${t('by')} ${modal.endUse.user_party}` : '', date: date(modal.endUse.start_date) })}</p>
           <SpecForm
             submitLabel="End use" onCancel={close} initial={{ end_date: today() }}
-            fields={[{ name: 'end_date', label: 'End date', type: 'date', required: true }]}
+            fields={[{ name: 'end_date', label: 'End date', type: 'date', required: true, min: modal.endUse.start_date }]}
             onSubmit={async (v) => { await api.post(`${path}/utilizations/${modal.endUse.id}/end`, v); await done('Use ended.')(); }}
           />
         </Modal>
@@ -698,13 +782,14 @@ export default function AssetDetail() {
           <SpecForm
             submitLabel="Save" onCancel={close} initial={{ maintenance_date: today(), status: 'COMPLETED', kind: 'ROUTINE' }}
             fields={[
-              { name: 'maintenance_date', label: 'Date', type: 'date', required: true },
-              { name: 'maintenance_type', label: 'Type of work', required: true, placeholder: 'e.g. Engine service' },
+              { name: 'maintenance_date', label: 'Date', type: 'date', required: true,
+                validate: (v, all) => (all.status !== 'PLANNED' && v > today() ? 'Only planned maintenance can be dated in the future.' : null) },
+              { name: 'maintenance_type', label: 'Type of work', required: true, placeholder: 'e.g. Engine service', maxLength: 120 },
               { name: 'kind', label: 'Kind', type: 'select', options: enumOpt(lk.enums.maintenance_kinds) },
               { name: 'status', label: 'Status', type: 'select', options: enumOpt(lk.enums.maintenance_statuses) },
               { name: 'cost', label: 'Cost (ETB)', type: 'number', step: '0.01', min: '0' },
-              { name: 'provider', label: 'Service provider' },
-              { name: 'next_maintenance_date', label: 'Next maintenance due', type: 'date' },
+              { name: 'provider', label: 'Service provider', kind: 'name' },
+              { name: 'next_maintenance_date', label: 'Next maintenance due', type: 'date', after: 'maintenance_date' },
               { name: 'description', label: 'Description', type: 'textarea', wide: true },
             ]}
             onSubmit={async (v) => { await api.post(`${path}/maintenance`, v); await done('Maintenance recorded. Attach invoices under Documents.')(); }}
@@ -720,8 +805,8 @@ export default function AssetDetail() {
             fields={[
               { name: 'status', label: 'Status', type: 'select', options: enumOpt(lk.enums.maintenance_statuses) },
               { name: 'cost', label: 'Cost (ETB)', type: 'number', step: '0.01', min: '0' },
-              { name: 'provider', label: 'Service provider' },
-              { name: 'next_maintenance_date', label: 'Next maintenance due', type: 'date' },
+              { name: 'provider', label: 'Service provider', kind: 'name' },
+              { name: 'next_maintenance_date', label: 'Next maintenance due', type: 'date', min: modal.maintJob.maintenance_date },
             ]}
             onSubmit={async (v) => { await api.patch(`${path}/maintenance/${modal.maintJob.id}`, v); await done('Maintenance updated.')(); }}
           />
@@ -734,14 +819,14 @@ export default function AssetDetail() {
           <SpecForm
             submitLabel="Save" onCancel={close} initial={{ inspection_date: today(), condition_found: a.condition, result: 'PASSED', method: search.get('scan') ? 'SCAN' : 'MANUAL' }}
             fields={[
-              { name: 'inspection_date', label: 'Date', type: 'date', required: true },
-              { name: 'inspector', label: 'Inspector', required: true },
+              { name: 'inspection_date', label: 'Date', type: 'date', required: true, past: true },
+              { name: 'inspector', label: 'Inspector', required: true, kind: 'person', maxLength: 160 },
               { name: 'result', label: 'Result', type: 'select', options: enumOpt(lk.enums.inspection_results) },
               { name: 'condition_found', label: 'Condition found', type: 'select', required: true, options: enumOpt(lk.enums.conditions), help: 'The asset’s condition is updated to this.' },
-              { name: 'next_inspection_date', label: 'Next inspection', type: 'date' },
+              { name: 'next_inspection_date', label: 'Next inspection', type: 'date', after: 'inspection_date' },
               { name: 'notes', label: 'Notes', type: 'textarea', wide: true },
-              { name: 'follow_up', label: 'What must be done next', wide: true, show: (v) => v.result === 'FAILED', help: 'Creates a follow-up action.' },
-              { name: 'follow_up_due', label: 'Follow-up due', type: 'date', show: (v) => v.result === 'FAILED' },
+              { name: 'follow_up', label: 'What must be done next', wide: true, maxLength: 500, show: (v) => v.result === 'FAILED', help: 'Creates a follow-up action.' },
+              { name: 'follow_up_due', label: 'Follow-up due', type: 'date', after: 'inspection_date', show: (v) => v.result === 'FAILED' },
             ]}
             onSubmit={async (v) => {
               const res = await sendOrQueue('POST', `${path}/inspections`, v, `Inspection of ${a.asset_code}`);
@@ -762,9 +847,9 @@ export default function AssetDetail() {
           <SpecForm
             submitLabel="Add" onCancel={close}
             fields={[
-              { name: 'description', label: 'What must be done', required: true, wide: true, type: 'textarea' },
+              { name: 'description', label: 'What must be done', required: true, wide: true, type: 'textarea', maxLength: 500 },
               { name: 'due_date', label: 'Due', type: 'date' },
-              { name: 'assigned_to', label: 'Who' },
+              { name: 'assigned_to', label: 'Who', kind: 'name', maxLength: 160 },
             ]}
             onSubmit={async (v) => { await api.post(`${path}/follow-ups`, v); await done('Follow-up added.')(); }}
           />
@@ -772,12 +857,24 @@ export default function AssetDetail() {
       )}
 
       {modal?.closeFollowUp && (
-        <Modal title="Follow-up done" onClose={close}>
+        <Modal title={modal.report ? 'Report follow-up done' : 'Follow-up done'} onClose={close}>
           <p>{modal.closeFollowUp.description}</p>
+          {modal.report && <p className="muted small">{t('The Inspector or the Kebele Administrator checks the work, then closes the follow-up or sends it back.')}</p>}
           <SpecForm
-            submitLabel="Mark done" onCancel={close}
-            fields={[{ name: 'resolution', label: 'What was done', required: true, wide: true, type: 'textarea' }]}
-            onSubmit={async (v) => { await api.post(`${path}/follow-ups/${modal.closeFollowUp.id}/close`, v); await done('Follow-up closed.')(); }}
+            submitLabel={modal.report ? 'Report done' : 'Mark done'} onCancel={close}
+            fields={[{ name: 'resolution', label: 'What was done', required: true, wide: true, type: 'textarea', maxLength: 500 }]}
+            onSubmit={async (v) => { await api.post(`${path}/follow-ups/${modal.closeFollowUp.id}/close`, v); await done(modal.report ? 'Follow-up reported done. It waits for a check.' : 'Follow-up closed.')(); }}
+          />
+        </Modal>
+      )}
+      {modal?.reopenFollowUp && (
+        <Modal title="Send the follow-up back" onClose={close}>
+          <p>{modal.reopenFollowUp.description}</p>
+          <p className="muted small">{t('Reported: {what}', { what: modal.reopenFollowUp.resolution })}</p>
+          <SpecForm
+            submitLabel="Send back" danger onCancel={close}
+            fields={[{ name: 'note', label: 'What is still missing', required: true, wide: true, type: 'textarea', maxLength: 500 }]}
+            onSubmit={async (v) => { await api.post(`${path}/follow-ups/${modal.reopenFollowUp.id}/reopen`, v); await done('Follow-up sent back.')(); }}
           />
         </Modal>
       )}
@@ -787,7 +884,7 @@ export default function AssetDetail() {
           <SpecForm
             submitLabel="Save" onCancel={close} initial={{ valuation_date: today() }}
             fields={[
-              { name: 'valuation_date', label: 'Valuation date', type: 'date', required: true },
+              { name: 'valuation_date', label: 'Valuation date', type: 'date', required: true, past: true },
               { name: 'value', label: 'Value (ETB)', type: 'number', step: '0.01', min: '0', required: true },
               { name: 'method', label: 'Method', wide: true, placeholder: 'e.g. Annual revaluation' },
               { name: 'notes', label: 'Notes', type: 'textarea', wide: true },
@@ -804,11 +901,11 @@ export default function AssetDetail() {
             fields={[
               { name: 'revenue_type', label: 'Type', type: 'select', options: enumOpt(lk.enums.revenue_types) },
               { name: 'amount', label: 'Amount (ETB)', type: 'number', step: '0.01', min: '0', required: true },
-              { name: 'received_date', label: 'Received on', type: 'date', required: true },
-              { name: 'payer', label: 'Paid by' },
+              { name: 'received_date', label: 'Received on', type: 'date', required: true, past: true },
+              { name: 'payer', label: 'Paid by', kind: 'name' },
               { name: 'period_start', label: 'Period from', type: 'date' },
-              { name: 'period_end', label: 'Period to', type: 'date' },
-              { name: 'reference', label: 'Receipt / reference' },
+              { name: 'period_end', label: 'Period to', type: 'date', after: 'period_start' },
+              { name: 'reference', label: 'Receipt / reference', maxLength: 120 },
               { name: 'utilization_id', label: 'For which use (optional)', type: 'select', options: [{ value: '', label: 'Not linked' }, ...utilizations.map((u) => ({ value: String(u.id), label: `${label(u.use_type)}${u.user_party ? ` · ${u.user_party}` : ''}` }))] },
             ]}
             onSubmit={async (v) => { await api.post(`${path}/revenues`, v); await done('Income recorded.')(); }}
@@ -823,16 +920,16 @@ export default function AssetDetail() {
             initial={acquisition ? Object.fromEntries(Object.entries(acquisition).map(([k, v]) => [k, v == null ? '' : String(v)])) : { method: 'PURCHASE', acquisition_date: a.acquisition_date ?? '' }}
             fields={[
               { name: 'method', label: 'How was it acquired?', type: 'select', required: true, options: enumOpt(lk.enums.acquisition_methods), wide: true },
-              { name: 'supplier_name', label: 'Supplier / vendor / donor' },
-              { name: 'supplier_contact', label: 'Supplier contact' },
-              { name: 'procurement_ref', label: 'Procurement reference' },
-              { name: 'contract_ref', label: 'Contract reference' },
-              { name: 'invoice_ref', label: 'Invoice reference' },
-              { name: 'acquisition_date', label: 'Acquisition date', type: 'date' },
+              { name: 'supplier_name', label: 'Supplier / vendor / donor', kind: 'name' },
+              { name: 'supplier_contact', label: 'Supplier contact', type: 'tel', help: 'A phone number, e.g. +2519…' },
+              { name: 'procurement_ref', label: 'Procurement reference', maxLength: 120 },
+              { name: 'contract_ref', label: 'Contract reference', maxLength: 120 },
+              { name: 'invoice_ref', label: 'Invoice reference', maxLength: 120 },
+              { name: 'acquisition_date', label: 'Acquisition date', type: 'date', past: true },
               { name: 'cost', label: 'Cost (ETB)', type: 'number', step: '0.01', min: '0' },
-              { name: 'approval_ref', label: 'Approval (decision / minute)' },
-              { name: 'approved_by_name', label: 'Approved by' },
-              { name: 'approved_on', label: 'Approved on', type: 'date' },
+              { name: 'approval_ref', label: 'Approval (decision / minute)', maxLength: 160 },
+              { name: 'approved_by_name', label: 'Approved by', kind: 'person' },
+              { name: 'approved_on', label: 'Approved on', type: 'date', past: true },
               { name: 'notes', label: 'Notes', type: 'textarea', wide: true },
             ]}
             onSubmit={async (v) => { await api.put(`${path}/acquisition`, v); await done('Acquisition saved.')(); }}
@@ -840,6 +937,29 @@ export default function AssetDetail() {
         </Modal>
       )}
 
+      {modal?.editDocument && (
+        <Modal title="Edit document" onClose={close}>
+          <p className="muted small">{t('Correct the title, type or expiry date. To change the file itself, upload the new one and remove this one.')}</p>
+          <SpecForm
+            submitLabel="Save" onCancel={close}
+            initial={{ title: modal.editDocument.title, doc_type: modal.editDocument.doc_type, expires_on: modal.editDocument.expires_on ? String(modal.editDocument.expires_on).slice(0, 10) : '' }}
+            fields={[
+              { name: 'title', label: 'Title', required: true, wide: true },
+              { name: 'doc_type', label: 'Type', type: 'select', required: true, options: enumOpt(lk.enums.doc_types) },
+              { name: 'expires_on', label: 'Expires on (licences, insurance, contracts)', type: 'date' },
+            ]}
+            onSubmit={async (v) => { await api.patch(`${path}/documents/${modal.editDocument.id}`, v); await done('Document updated.')(); }}
+          />
+        </Modal>
+      )}
+      {modal?.removeDocument && (
+        <ConfirmDialog
+          title="Remove document" danger confirmLabel="Remove"
+          message={t('Remove "{title}"? The file is deleted; the record of its upload and removal stays in the history. This cannot be undone.', { title: modal.removeDocument.title })}
+          onClose={close}
+          onConfirm={async () => { await api.del(`${path}/documents/${modal.removeDocument.id}`); await done('Document removed.')(); }}
+        />
+      )}
       {m('document') && (
         <Modal title="Upload document or photo" onClose={close} wide>
           <SpecForm

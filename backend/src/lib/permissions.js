@@ -107,6 +107,23 @@ export async function loadScope(userId) {
  *  - every other role: the union of assigned Kebeles, Kifle Ketemas and sectors
  * A user with no assignments sees nothing.
  */
+/**
+ * The Kifle Ketemas and Kebeles a user may name as an area (to start a stock-taking of, say), following the same rules
+ * as applyScope: a Kebele or Sector Administrator its own Kebele(s) and their Kifle Ketema, a Kifle Ketema Administrator
+ * its Kifle Ketema(s) and all their Kebeles, other roles the union of both. `null` means the whole city.
+ */
+export async function allowedAreas(user) {
+  if (hasAllScope(user)) return null;
+  const { kifle, kebeles } = user.scope;
+  const kifleOf = (ids) => (ids.length ? db('kebeles').whereIn('id', ids).whereNotNull('kifle_ketema_id').pluck('kifle_ketema_id') : []);
+  const kebelesIn = (ids) => (ids.length ? db('kebeles').whereIn('kifle_ketema_id', ids).pluck('id') : []);
+  if ([ROLES.KEBELE_ADMIN, ROLES.SECTOR_ADMIN].includes(user.role)) {
+    return { kifle: new Set(await kifleOf(kebeles)), kebeles: new Set(kebeles) };
+  }
+  if (user.role === ROLES.KIFLE_ADMIN) return { kifle: new Set(kifle), kebeles: new Set(await kebelesIn(kifle)) };
+  return { kifle: new Set([...kifle, ...(await kifleOf(kebeles))]), kebeles: new Set([...kebeles, ...(await kebelesIn(kifle))]) };
+}
+
 export function applyScope(qb, user, table = 'assets') {
   if (hasAllScope(user)) return qb;
   const { kifle, kebeles, sectors } = user.scope;

@@ -1,5 +1,6 @@
 import { db } from '../db.js';
 import { likePattern } from './schemas.js';
+import { DUE_WINDOW_DAYS } from './constants.js';
 
 const CURRENT_REVENUE_SQL = `EXISTS (SELECT 1 FROM utilizations u WHERE u.asset_id = assets.id AND u.generates_revenue = 1
   AND u.start_date <= CURDATE() AND (u.end_date IS NULL OR u.end_date >= CURDATE()))`;
@@ -59,5 +60,11 @@ export function applyFilters(qb, f) {
   if (!f.include_archived) qb.whereNull('assets.archived_at');
   if (f.revenue === 'yes') qb.whereRaw(CURRENT_REVENUE_SQL);
   if (f.revenue === 'no') qb.whereRaw(`NOT ${CURRENT_REVENUE_SQL}`);
+  // the dashboards' "maintenance due": the latest maintenance record sets a next date that is past or near
+  if (f.maintenance === 'due') {
+    qb.whereNot('assets.status', 'DISPOSED').whereRaw(`(SELECT m.next_maintenance_date FROM maintenance_records m
+      WHERE m.asset_id = assets.id AND m.status <> 'CANCELLED' AND m.next_maintenance_date IS NOT NULL
+      ORDER BY m.maintenance_date DESC, m.id DESC LIMIT 1) <= DATE_ADD(CURDATE(), INTERVAL ? DAY)`, [DUE_WINDOW_DAYS]);
+  }
   return qb;
 }

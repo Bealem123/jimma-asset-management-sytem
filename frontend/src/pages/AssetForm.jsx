@@ -7,12 +7,16 @@ import { useLookups } from '../lookups.jsx';
 import { can } from '../permissions.js';
 import { Alert, Loading, PageHeader, SpecForm, enumOpt, opt, useAsync } from '../components/ui.jsx';
 import { t } from '../i18n.jsx';
+import NavIcon from '../components/NavIcon.jsx';
 import Stepper from '../components/Stepper.jsx';
+import {
+  validateDate, validateLatitude, validateLongitude, validateMoney, validateOrgName, validatePersonName, validatePhone, validateQuantity,
+} from '../validation.js';
 
 const ACQ_FIELDS = ['method', 'procurement_ref', 'supplier_name', 'supplier_contact', 'contract_ref', 'invoice_ref', 'approval_ref', 'approved_by_name', 'approved_on', 'notes'];
 
-/** Fills latitude and longitude from the device's GPS. */
-function GpsButton({ set }) {
+/** Fills latitude and longitude from the device's GPS, only with a position inside Jimma City (`city`: south, west, north, east). */
+function GpsButton({ set, city }) {
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
   function locate() {
@@ -21,6 +25,14 @@ function GpsButton({ set }) {
     setBusy(true);
     navigator.geolocation.getCurrentPosition(
       (p) => {
+        const [south, west, north, east] = city;
+        const { latitude: la, longitude: lo } = p.coords;
+        if (la < south || la > north || lo < west || lo > east) {
+          // a computer without GPS guesses its place from the internet connection, often in another city
+          setMsg('This device placed you outside Jimma City, so the position is not used. Use a phone with GPS on, or type the coordinates.');
+          setBusy(false);
+          return;
+        }
         set('latitude', p.coords.latitude.toFixed(6));
         set('longitude', p.coords.longitude.toFixed(6));
         setMsg(`Location captured (accuracy about ${Math.round(p.coords.accuracy)} m).`);
@@ -91,6 +103,7 @@ function AssetWizard({ id, asset }) {
   const editing = Boolean(asset);
   const navigate = useNavigate();
   const lk = useLookups();
+  const city = lk.enums.jimma_bounds || [7.58, 36.72, 7.78, 36.95]; // south, west, north, east (JIMMA_BOUNDS on the server)
   const { user } = useAuth();
 
   // A user bound to an area sees and can choose only that area: their own sector, Kebele and Kifle Ketema.
@@ -149,6 +162,8 @@ function AssetWizard({ id, asset }) {
     type: f.type,
     required: Boolean(f.required),
     help: f.help,
+    ...(f.kind && { kind: f.kind }), // a person, company or office: letters, as on every other form
+    ...(f.type === 'text' && { maxLength: 200 }),
     ...(f.type === 'select' && { options: [{ value: '', label: 'Choose…' }, ...f.options.map((o) => ({ value: o, label: o }))] }),
     ...(f.type === 'number' && { step: 'any', min: '0' }),
     ...(f.show && { show: (v) => f.show.in.includes(v[`details.${f.show.key}`]) }),
@@ -181,15 +196,17 @@ function AssetWizard({ id, asset }) {
       ],
     },
     {
-      page: 0, name: 'asset_type_other', label: 'Type of asset', required: true, placeholder: 'e.g. Concrete mixer',
+      page: 0, name: 'asset_type_other', label: 'Type of asset', required: true, placeholder: 'e.g. Concrete mixer', maxLength: 120,
       help: 'Not in the list? Type it here. An administrator can add it to the list later.',
       show: (v) => v.asset_type_id === OTHER_TYPE,
     },
     { page: 0, name: 'condition', label: 'Physical condition', type: 'select', options: enumOpt(lk.enums.conditions) },
-    { page: 0, name: 'function_use', label: 'Function / use', placeholder: 'e.g. Road construction, public transport' },
-    { page: 0, name: 'serial_number', label: 'Serial number', help: 'Two live assets cannot share a serial number.' },
-    { page: 0, name: 'registration_number', label: 'Registration / plate number' },
-    { page: 0, name: 'description', label: 'Description / specifications', type: 'textarea', wide: true },
+    { page: 0, name: 'function_use', label: 'Function / use', placeholder: 'e.g. Road construction, public transport', maxLength: 160 },
+    { page: 0, name: 'serial_number', label: 'Serial number', help: 'Two live assets cannot share a serial number.', maxLength: 120,
+      validate: (v) => (/^[A-Za-z0-9\-_/.:]+$/.test(v.trim()) ? null : 'Use only letters, digits and - _ / . : (no spaces).') },
+    { page: 0, name: 'registration_number', label: 'Registration / plate number', maxLength: 120,
+      validate: (v) => (/^[A-Za-z0-9\-_/.:\s]+$/.test(v.trim()) ? null : 'Use only letters, digits, spaces and - _ / . :') },
+    { page: 0, name: 'description', label: 'Description / specifications', type: 'textarea', wide: true, maxLength: 5000 },
     // 2. what the sector records
     ...detailFields,
     // 3. where it is and who is responsible
@@ -204,34 +221,40 @@ function AssetWizard({ id, asset }) {
       options: (v) => opt(keep(linkedKebeles(myKebeles).filter((k) => !v.kifle_ketema_id || String(k.kifle_ketema_id) === String(v.kifle_ketema_id)), initial.kebele_id), undefined, { blank: 'Not recorded' }),
       derive: (value) => (value ? { kifle_ketema_id: String(kebeleKifle(value) ?? '') } : {}),
     },
-    { page: 2, name: 'location_detail', label: 'Specific location / building / facility', wide: true, placeholder: 'Building, plot, yard or street' },
-    { page: 2, name: 'latitude', label: 'Latitude (GPS)', type: 'number', step: 'any' },
-    { page: 2, name: 'longitude', label: 'Longitude (GPS)', type: 'number', step: 'any' },
-    { page: 2, name: '_gps', type: 'custom', wide: true, label: 'GPS', render: ({ set }) => <GpsButton set={set} /> },
+    { page: 2, name: 'location_detail', label: 'Specific location / building / facility', wide: true, placeholder: 'Building, plot, yard or street', maxLength: 255 },
+    {
+      page: 2, name: 'latitude', label: 'Latitude (GPS)', type: 'number', step: 'any',
+      validate: (v) => (v ? validateLatitude(v, { label: 'Latitude' }) || (Number(v) < city[0] || Number(v) > city[2] ? 'This latitude is outside Jimma City. Jimma lies around 7.67, 36.83: check the coordinates.' : null) : null),
+    },
+    {
+      page: 2, name: 'longitude', label: 'Longitude (GPS)', type: 'number', step: 'any',
+      validate: (v) => (v ? validateLongitude(v, { label: 'Longitude' }) || (Number(v) < city[1] || Number(v) > city[3] ? 'This longitude is outside Jimma City. Jimma lies around 7.67, 36.83: check the coordinates.' : null) : null),
+    },
+    { page: 2, name: '_gps', type: 'custom', wide: true, label: 'GPS', render: ({ set }) => <GpsButton set={set} city={city} /> },
     { page: 2, name: 'ownership_type', label: 'Ownership', type: 'select', options: enumOpt(lk.enums.ownership_types) },
-    { page: 2, name: 'owner_name', label: 'Legal owner', required: true, show: () => !filledForMe },
-    { page: 2, name: 'responsible_office', label: 'Responsible office', show: () => !filledForMe },
-    { page: 2, name: 'responsible_officer', label: 'Responsible officer', show: () => !filledForMe },
-    { page: 2, name: 'current_holder', label: 'Current user / holder', help: 'Who has or uses it now. May differ from the owner and the responsible office.', wide: true },
+    { page: 2, name: 'owner_name', label: 'Legal owner', required: true, kind: 'name', show: () => !filledForMe, validate: (v) => validateOrgName(v, { required: true, label: 'Legal owner' }) },
+    { page: 2, name: 'responsible_office', label: 'Responsible office', show: () => !filledForMe, kind: 'name' },
+    { page: 2, name: 'responsible_officer', label: 'Responsible officer', kind: 'person', maxLength: 160, show: () => !filledForMe, validate: (v) => v ? validatePersonName(v, { label: 'Responsible officer' }) : null },
+    { page: 2, name: 'current_holder', label: 'Current user / holder', kind: 'name', help: 'Who has or uses it now. May differ from the owner and the responsible office.', wide: true },
     ...(editing ? [] : [{ page: 2, name: 'status', label: 'Initial status', type: 'select', options: enumOpt(['PLANNED', 'REGISTERED']), help: 'It becomes Active when the approval workflow is completed.' }]),
     { page: 2, name: 'is_reservable', type: 'checkbox', label: 'Reservation', checkLabel: 'This asset can be reserved (vehicle, equipment, hall …)', wide: true },
     // 4. how it was acquired and what it is worth
-    { page: 3, name: 'acquisition_date', label: 'Acquisition date', type: 'date' },
-    { page: 3, name: 'acquisition_cost', label: 'Acquisition cost (ETB)', type: 'number', step: '0.01', min: '0' },
-    { page: 3, name: 'useful_life_years', label: 'Useful life (years)', type: 'number', min: '1', help: 'Used to calculate depreciation.' },
-    { page: 3, name: 'salvage_value', label: 'Salvage value (ETB)', type: 'number', step: '0.01', min: '0', help: 'Expected value at the end of its life.' },
+    { page: 3, name: 'acquisition_date', label: 'Acquisition date', type: 'date', past: true, validate: (v) => v ? validateDate(v, { label: 'Acquisition date' }) : null },
+    { page: 3, name: 'acquisition_cost', label: 'Acquisition cost (ETB)', type: 'number', step: '0.01', min: '0', validate: (v) => v ? validateMoney(v, { label: 'Acquisition cost' }) : null },
+    { page: 3, name: 'useful_life_years', label: 'Useful life (years)', type: 'number', min: '1', integer: true, help: 'Used to calculate depreciation.', validate: (v) => v ? validateQuantity(v, { min: 1, max: 200, label: 'Useful life' }) : null },
+    { page: 3, name: 'salvage_value', label: 'Salvage value (ETB)', type: 'number', step: '0.01', min: '0', help: 'Expected value at the end of its life.', validate: (v) => v ? validateMoney(v, { label: 'Salvage value' }) : null },
     ...(editing ? [] : [
-      { page: 3, name: 'current_valuation', label: 'Current valuation (ETB)', type: 'number', step: '0.01', min: '0' },
-      { page: 3, name: 'valuation_date', label: 'Valuation date', type: 'date' },
+      { page: 3, name: 'current_valuation', label: 'Current valuation (ETB)', type: 'number', step: '0.01', min: '0', validate: (v) => v ? validateMoney(v, { label: 'Current valuation' }) : null },
+      { page: 3, name: 'valuation_date', label: 'Valuation date', type: 'date', past: true, validate: (v) => v ? validateDate(v, { label: 'Valuation date' }) : null },
       { page: 3, name: 'acq_method', label: 'How was it acquired?', type: 'select', wide: true, options: [{ value: '', label: 'Not recorded now' }, ...enumOpt(lk.enums.acquisition_methods)], help: 'Recording the acquisition keeps the supplier, contract and approval with the asset.' },
-      { page: 3, name: 'acq_procurement_ref', label: 'Procurement reference', show: (v) => v.acq_method },
-      { page: 3, name: 'acq_supplier_name', label: 'Supplier / vendor / donor', show: (v) => v.acq_method },
-      { page: 3, name: 'acq_supplier_contact', label: 'Supplier contact', show: (v) => v.acq_method },
-      { page: 3, name: 'acq_contract_ref', label: 'Contract reference', show: (v) => v.acq_method },
-      { page: 3, name: 'acq_invoice_ref', label: 'Invoice reference', show: (v) => v.acq_method },
-      { page: 3, name: 'acq_approval_ref', label: 'Acquisition approval (decision / minute)', show: (v) => v.acq_method },
-      { page: 3, name: 'acq_approved_by_name', label: 'Approved by', show: (v) => v.acq_method },
-      { page: 3, name: 'acq_approved_on', label: 'Approved on', type: 'date', show: (v) => v.acq_method },
+      { page: 3, name: 'acq_procurement_ref', label: 'Procurement reference', show: (v) => v.acq_method, maxLength: 120 },
+      { page: 3, name: 'acq_supplier_name', label: 'Supplier / vendor / donor', kind: 'name', show: (v) => v.acq_method, validate: (v) => v ? validateOrgName(v, { label: 'Supplier / vendor' }) : null },
+      { page: 3, name: 'acq_supplier_contact', label: 'Supplier contact', type: 'tel', show: (v) => v.acq_method, validate: (v) => v ? validatePhone(v, { label: 'Supplier contact' }) : null },
+      { page: 3, name: 'acq_contract_ref', label: 'Contract reference', show: (v) => v.acq_method, maxLength: 120 },
+      { page: 3, name: 'acq_invoice_ref', label: 'Invoice reference', show: (v) => v.acq_method, maxLength: 120 },
+      { page: 3, name: 'acq_approval_ref', label: 'Acquisition approval (decision / minute)', show: (v) => v.acq_method, maxLength: 160 },
+      { page: 3, name: 'acq_approved_by_name', label: 'Approved by', kind: 'person', show: (v) => v.acq_method, validate: (v) => v ? validatePersonName(v, { label: 'Approved by' }) : null },
+      { page: 3, name: 'acq_approved_on', label: 'Approved on', type: 'date', past: true, show: (v) => v.acq_method, validate: (v) => v ? validateDate(v, { label: 'Approved on' }) : null },
     ]),
   ];
   const shown = (f, v = values) => !f.show || f.show(v);
@@ -252,9 +275,19 @@ function AssetWizard({ id, asset }) {
   // Next: what this step needs must be filled in before moving on
   async function next(v) {
     const all = { ...values, ...v };
-    const missing = fields.filter((f) => f.page === step && f.required && shown(f, all) && isEmpty(all[f.name]));
-    if (missing.length) {
-      throw new ApiError(400, t('Please correct the highlighted fields.'), Object.fromEntries(missing.map((f) => [f.name, f.name === 'photo' ? t('Add a photo of the asset.') : t('This is needed.')])));
+    const problems = Object.fromEntries(fields
+      .filter((f) => f.page === step && f.required && shown(f, all) && isEmpty(all[f.name]))
+      .map((f) => [f.name, f.name === 'photo' ? t('Add a photo of the asset.') : t('{label} is required.', { label: t(f.label || 'This') })]));
+
+    for (const f of fields.filter((f) => f.page === step && shown(f, all))) {
+      if (f.validate && !problems[f.name]) {
+        const err = f.validate(all[f.name], all);
+        if (err) problems[f.name] = t(err);
+      }
+    }
+
+    if (Object.keys(problems).length) {
+      throw new ApiError(400, t('Please correct the highlighted fields.'), problems);
     }
     keepValues(v);
     setErrors((e) => ({ ...e, [step]: undefined }));
@@ -331,7 +364,11 @@ function AssetWizard({ id, asset }) {
   };
 
   const stepFields = fields.filter((f) => f.page === step);
-  const back = step > 0 && <button type="button" className="btn" onClick={() => go(step - 1)}>{t('Back')}</button>;
+  const back = step > 0 && (
+    <button type="button" className="btn btn-icon-only btn-step" onClick={() => go(step - 1)} title={t('Back')} aria-label={t('Back')}>
+      <NavIcon name="chevronLeft" />
+    </button>
+  );
 
   return (
     <>
@@ -350,7 +387,12 @@ function AssetWizard({ id, asset }) {
         )}
         {step < REVIEW ? (
           step === 1 && !detailFields.length ? (
-            <div className="form-actions">{back}<button type="button" className="btn btn-primary" onClick={() => next({})}>{t('Next')}</button></div>
+            <div className="form-actions">
+              {back}
+              <button type="button" className="btn btn-primary btn-icon-only btn-step" onClick={() => next({})} title={t('Next')} aria-label={t('Next')}>
+                <NavIcon name="chevronRight" />
+              </button>
+            </div>
           ) : (
             <SpecForm
               key={`${step}-${formKey}`}
@@ -391,7 +433,7 @@ function AssetWizard({ id, asset }) {
             )}
             {!editing && <p className="muted small">{t('Otherwise it is kept as a draft that only you can see, and you can send it later from its page.')}</p>}
             <div className="form-actions">
-              <button type="button" className="btn" onClick={() => navigate(editing ? `/assets/${id}` : '/assets')} disabled={saving}>{t('Cancel')}</button>
+              <button type="button" className="btn btn-cancel" onClick={() => navigate(editing ? `/assets/${id}` : '/assets')} disabled={saving}>{t('Cancel')}</button>
               {back}
               <button type="button" className="btn btn-primary" onClick={save} disabled={saving}>{saving ? t('Saving…') : t(editing ? 'Save changes' : 'Register asset')}</button>
             </div>

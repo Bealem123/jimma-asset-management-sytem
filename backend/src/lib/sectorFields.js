@@ -1,4 +1,5 @@
 import { HttpError } from '../middleware/errors.js';
+import { NAME_TEXT_REGEX } from './schemas.js';
 
 // What each of the 13 sectors records about its own assets, on top of the fields every asset has. These are the
 // second step of registration ("<sector> details") and are kept with the asset (assets.details).
@@ -10,8 +11,10 @@ import { HttpError } from '../middleware/errors.js';
 //   money    -> hidden from roles that may not see financial figures
 //   show     -> asked only when another field of the sector has one of the listed values
 //   private  -> a person's name or a document / identification number: never on the public card a QR code opens
+//   kind     -> 'name': the name of a person, a company or an office (letters, no stray symbols), as elsewhere
 
 const t = (key, label, more = {}) => ({ key, label, type: 'text', ...more });
+const w = (key, label, more = {}) => t(key, label, { kind: 'name', ...more }); // who: a person, a company or an office
 const n = (key, label, more = {}) => ({ key, label, type: 'number', ...more });
 const d = (key, label, more = {}) => ({ key, label, type: 'date', ...more });
 const s = (key, label, options, more = {}) => ({ key, label, type: 'select', options, ...more });
@@ -23,7 +26,7 @@ export const SECTOR_FIELDS = {
     s('agri_use', 'Agricultural use', ['Crops', 'Coffee', 'Livestock', 'Nursery / seedlings', 'Irrigation scheme', 'Mixed farming', 'Not in use'], { required: true }),
     n('area_ha', 'Area', { unit: 'ha', required: true }),
     s('water_source', 'Water source', ['Rain-fed', 'River', 'Borehole / well', 'Irrigation canal', 'Other']),
-    t('operator', 'Farmed / operated by', { private: true, help: 'The office, cooperative or person working the land.' }),
+    w('operator', 'Farmed / operated by', { private: true, help: 'The office, cooperative or person working the land.' }),
     t('title_deed_no', 'Title deed / holding certificate number', { private: true }),
   ],
   LND: [
@@ -32,13 +35,13 @@ export const SECTOR_FIELDS = {
     s('land_use', 'Planned land use', ['Residential', 'Commercial', 'Industrial', 'Institutional', 'Agricultural', 'Mixed use', 'Green / open space', 'Road reserve'], { required: true }),
     t('title_deed_no', 'Title deed / certificate number', { private: true }),
     s('lease_status', 'Lease status', ['Not leased', 'Leased', 'Under negotiation', 'In dispute']),
-    t('lessee', 'Lessee', { private: true, show: { key: 'lease_status', in: ['Leased', 'Under negotiation'] } }),
+    w('lessee', 'Lessee', { private: true, show: { key: 'lease_status', in: ['Leased', 'Under negotiation'] } }),
     d('lease_end', 'Lease ends on', { show: { key: 'lease_status', in: ['Leased'] } }),
     n('lease_rate_etb', 'Annual lease amount', { unit: 'ETB', money: true, show: { key: 'lease_status', in: ['Leased'] } }),
   ],
   INV: [
     t('project_name', 'Investment project', { required: true }),
-    t('investor', 'Investor / company', { private: true }),
+    w('investor', 'Investor / company', { private: true }),
     t('licence_no', 'Investment licence number', { private: true }),
     s('project_stage', 'Project stage', ['Planned', 'Under construction', 'Operational', 'Suspended', 'Terminated'], { required: true }),
     n('land_area_m2', 'Land allocated', { unit: 'm²' }),
@@ -48,7 +51,7 @@ export const SECTOR_FIELDS = {
     s('premises_type', 'Type of premises', ['Shop', 'Stall', 'Kiosk', 'Market block', 'Commercial building', 'Warehouse', 'Other'], { required: true }),
     t('unit_no', 'Unit / stall number'),
     n('floor_area_m2', 'Floor area', { unit: 'm²' }),
-    t('occupant', 'Business operating in it', { private: true, help: 'Trading name of the tenant or user, if any.' }),
+    w('occupant', 'Business operating in it', { private: true, help: 'Trading name of the tenant or user, if any.' }),
     LICENCE('Trade licence number'),
     n('monthly_rent_etb', 'Monthly rent', { unit: 'ETB', money: true }),
   ],
@@ -56,7 +59,7 @@ export const SECTOR_FIELDS = {
     s('facility_type', 'Type of facility', ['Warehouse', 'Processing plant', 'Storage yard', 'Packing house', 'Other'], { required: true }),
     s('commodity', 'Main commodity', ['Coffee', 'Fruit and vegetables', 'Spices', 'Livestock products', 'Other']),
     n('capacity_t', 'Storage / processing capacity', { unit: 'tonnes' }),
-    t('operator', 'Operated by', { private: true }),
+    w('operator', 'Operated by', { private: true }),
     LICENCE('Export licence number'),
   ],
   SRV: [
@@ -70,7 +73,7 @@ export const SECTOR_FIELDS = {
     t('product', 'What it produces'),
     t('capacity', 'Production capacity', { help: 'e.g. 500 blocks a day' }),
     n('power_kva', 'Installed power', { unit: 'kVA' }),
-    t('operator', 'Operated by', { private: true }),
+    w('operator', 'Operated by', { private: true }),
     LICENCE(),
   ],
   CON: [
@@ -78,7 +81,7 @@ export const SECTOR_FIELDS = {
     t('make_model', 'Make and model', { show: { key: 'con_kind', in: ['Construction machine'] } }),
     n('engine_hours', 'Engine hours', { unit: 'h', show: { key: 'con_kind', in: ['Construction machine'] } }),
     t('project_name', 'Project', { show: { key: 'con_kind', in: ['Construction site', 'Building under construction', 'Material yard'] } }),
-    t('contractor', 'Contractor', { private: true, show: { key: 'con_kind', in: ['Construction site', 'Building under construction'] } }),
+    w('contractor', 'Contractor', { private: true, show: { key: 'con_kind', in: ['Construction site', 'Building under construction'] } }),
     t('permit_no', 'Building / construction permit number', { private: true, show: { key: 'con_kind', in: ['Construction site', 'Building under construction'] } }),
     d('completion_date', 'Planned completion', { show: { key: 'con_kind', in: ['Construction site', 'Building under construction'] } }),
   ],
@@ -87,7 +90,7 @@ export const SECTOR_FIELDS = {
     s('heritage_status', 'Heritage status', ['Not listed', 'Locally protected', 'Nationally registered']),
     n('visitors_per_day', 'Visitor capacity per day'),
     n('entrance_fee_etb', 'Entrance fee', { unit: 'ETB', money: true }),
-    t('managed_by', 'Managed by'),
+    w('managed_by', 'Managed by'),
   ],
   TRN: [
     s('trn_kind', 'What is being registered', ['Vehicle', 'Bus / taxi terminal', 'Parking area', 'Road or bridge', 'Other'], { required: true }),
@@ -107,7 +110,7 @@ export const SECTOR_FIELDS = {
     t('brand_model', 'Brand and model'),
     n('quantity', 'Quantity', { help: 'For a batch registered as one asset, e.g. 20 chairs.' }),
     t('unit', 'Unit', { help: 'e.g. pieces, sets, boxes' }),
-    t('assigned_office', 'Office using it'),
+    w('assigned_office', 'Office using it'),
     d('warranty_until', 'Warranty valid until'),
   ],
   RNT: [
@@ -115,14 +118,14 @@ export const SECTOR_FIELDS = {
     t('unit_no', 'Unit / plot number'),
     n('floor_area_m2', 'Area', { unit: 'm²' }),
     s('occupancy', 'Occupancy', ['Rented', 'Vacant', 'Under maintenance'], { required: true }),
-    t('tenant', 'Tenant', { private: true, show: { key: 'occupancy', in: ['Rented'] } }),
+    w('tenant', 'Tenant', { private: true, show: { key: 'occupancy', in: ['Rented'] } }),
     t('contract_no', 'Rental contract number', { private: true, show: { key: 'occupancy', in: ['Rented'] } }),
     d('contract_end', 'Contract ends on', { show: { key: 'occupancy', in: ['Rented'] } }),
     n('monthly_rent_etb', 'Monthly rent', { unit: 'ETB', money: true, show: { key: 'occupancy', in: ['Rented'] } }),
   ],
   ASK: [
     t('local_name', 'Local name of the asset or charge', { required: true, help: 'As it is known locally.' }),
-    t('payer', 'Who pays / uses it', { private: true }),
+    w('payer', 'Who pays / uses it', { private: true }),
     t('legal_basis', 'Legal basis', { help: 'Proclamation, regulation or council decision, if known.' }),
     t('collection_point', 'Where it is collected or kept'),
   ],
@@ -160,6 +163,7 @@ export function cleanDetails(code, raw, { requireAll = false } = {}) {
       if (!f.options.includes(v)) throw bad(f.key, 'Choose one of the options.');
     } else {
       v = String(v).slice(0, 200);
+      if (f.kind === 'name' && !(/\p{L}/u.test(v) && NAME_TEXT_REGEX.test(v))) throw bad(f.key, `${f.label}: a name of letters, without stray symbols.`);
     }
     out[f.key] = v;
   }

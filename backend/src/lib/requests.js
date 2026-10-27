@@ -167,6 +167,8 @@ const AFTER_EXECUTE = {
 
 /**
  * Do it now if this kind of request needs no approval; otherwise record it for an approver.
+ * A two-step request waits for the Kebele Administrator's review, then the Kifle Ketema Administrator's approval.
+ * When a reviewer (the Kebele Administrator) asks, the asking is its review: the request goes straight to the approver.
  * Returns { executed: true, result } or { executed: false, request }.
  */
 export async function submitOrExecute(user, asset, type, payload, summary) {
@@ -178,18 +180,23 @@ export async function submitOrExecute(user, asset, type, payload, summary) {
   }
   const clash = await db('approval_requests').where({ asset_id: asset.id, request_type: type }).whereIn('status', ['PENDING', 'REVIEWED']).first();
   if (clash) throw conflict(`There is already a ${type.toLowerCase().replace('_', ' ')} request waiting for approval for this asset.`);
+  const twoStep = wf.steps >= 2;
+  const reviewedByAsker = twoStep && has(user, 'request.review');
   const request = await db.transaction(async (trx) => {
     const [id] = await trx('approval_requests').insert({
       request_type: type, asset_id: asset.id, payload: JSON.stringify(payload), summary: summary.slice(0, 500), requested_by: user.id,
+      ...(reviewedByAsker ? { status: 'REVIEWED', reviewed_by: user.id, reviewed_at: db.fn.now() } : {}),
     });
     await logAudit(trx, user, {
-      action: 'REQUEST_CREATE', entity: 'request', entityId: id, assetId: asset.id, summary: `${asset.asset_code}: ${type.toLowerCase().replace('_', ' ')} requested - ${summary}`,
+      action: 'REQUEST_CREATE', entity: 'request', entityId: id, assetId: asset.id, summary: `${asset.asset_code}: ${type.toLowerCase().replace('_', ' ')} requested${reviewedByAsker ? ' and reviewed' : ''} - ${summary}`,
     });
     return trx('approval_requests').where({ id }).first();
   });
-  await notifyAsset(asset, 'request.decide', {
-    exceptUserId: user.id, type: 'APPROVAL_PENDING', title: `${asset.asset_code}: ${type.toLowerCase().replace('_', ' ')} request waiting`,
-    body: summary, link: '/approvals', dedupeKey: `REQ:${request.id}:new`,
+  const reviewFirst = twoStep && !reviewedByAsker;
+  await notifyAsset(asset, reviewFirst ? 'request.review' : 'request.decide', {
+    exceptUserId: user.id, type: 'APPROVAL_PENDING',
+    title: `${asset.asset_code}: ${type.toLowerCase().replace('_', ' ')} request waiting${reviewFirst ? ' for review' : ''}`,
+    body: summary, link: '/approvals?tab=requests', dedupeKey: `REQ:${request.id}:new`,
   });
   return { executed: false, request };
 }
@@ -199,8 +206,10 @@ export async function submitOrExecute(user, asset, type, payload, summary) {
 const parsePayload = (row) => (typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload);
 export const presentRequest = (row) => ({ ...row, payload: parsePayload(row) });
 
-async function loadForDecision(user, id) {
-  if (!has(user, 'request.decide')) throw forbidden('Your role cannot approve requests.');
+// Who acts on a request: the Kebele Administrator reviews it (request.review), the Kifle Ketema Administrator
+// gives the final approval (request.decide). Either may reject it while it is at their step.
+async function loadForDecision(user, id, may) {
+  if (!may(user)) throw forbidden('Your role cannot decide this request.');
   const request = await db('approval_requests').where({ id }).first();
   if (!request) throw notFound('Request not found.');
   const asset = await scopedAsset(user, request.asset_id);
@@ -218,8 +227,14 @@ function assertNotOwnRequest(user, request) {
   }
 }
 
+const canReviewRequests = (user) => has(user, 'request.review');
+const canDecideRequests = (user) => has(user, 'request.decide');
+
+/** True while the request waits at the review step (two-step requests only). */
+const atReview = (wf, request) => wf.steps >= 2 && request.status === 'PENDING';
+
 export async function reviewRequest(user, id, note) {
-  const { request, asset } = await loadForDecision(user, id);
+  const { request, asset } = await loadForDecision(user, id, canReviewRequests);
   assertOpen(request);
   assertNotOwnRequest(user, request);
   const wf = await getWorkflow(request.request_type);
@@ -230,18 +245,18 @@ export async function reviewRequest(user, id, note) {
     await logAudit(trx, user, { action: 'REQUEST_REVIEW', entity: 'request', entityId: id, assetId: asset.id, summary: `${asset.asset_code}: ${request.request_type.toLowerCase()} request reviewed${note ? ` (${note})` : ''}` });
   });
   await notifyAsset(asset, 'request.decide', {
-    exceptUserId: user.id, type: 'APPROVAL_PENDING', title: `${asset.asset_code}: request ready for final approval`, body: request.summary, link: '/approvals', dedupeKey: `REQ:${id}:reviewed`,
+    exceptUserId: user.id, type: 'APPROVAL_PENDING', title: `${asset.asset_code}: request ready for final approval`, body: request.summary, link: '/approvals?tab=requests', dedupeKey: `REQ:${id}:reviewed`,
   });
   return presentRequest(await db('approval_requests').where({ id }).first());
 }
 
 export async function approveRequest(user, id, note) {
-  const { request, asset } = await loadForDecision(user, id);
+  const { request, asset } = await loadForDecision(user, id, canDecideRequests);
   assertOpen(request);
   assertNotOwnRequest(user, request);
   const wf = await getWorkflow(request.request_type);
   if (wf.steps >= 2) {
-    if (request.status !== 'REVIEWED') throw conflict('This request must be reviewed by someone first.');
+    if (request.status !== 'REVIEWED') throw conflict('This request must be reviewed by the Kebele Administrator first.');
     if (config.separationOfDuties && request.reviewed_by === user.id) throw conflict('Separation of duties: the reviewer cannot also give the final approval.');
   }
   const payload = parsePayload(request);
@@ -262,8 +277,11 @@ export async function approveRequest(user, id, note) {
 
 export async function rejectRequest(user, id, note) {
   if (!note) throw new HttpError(400, 'Please give a reason.', { comment: 'Please give a reason.' });
-  const { request, asset } = await loadForDecision(user, id);
+  const { request, asset } = await loadForDecision(user, id, (u) => canDecideRequests(u) || canReviewRequests(u));
   assertOpen(request);
+  if (!canDecideRequests(user) && !atReview(await getWorkflow(request.request_type), request)) {
+    throw conflict('This request has already been reviewed. Only the final approver can reject it now.');
+  }
   assertNotOwnRequest(user, request);
   await db.transaction(async (trx) => {
     await trx('approval_requests').where({ id }).update({ status: 'REJECTED', decided_by: user.id, decided_at: db.fn.now(), decision_note: note });

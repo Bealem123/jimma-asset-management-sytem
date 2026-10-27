@@ -13,7 +13,7 @@ try {
     const plan = await planAdminAccounts();
     const existing = new Set((await db('users').select('username')).map((u) => u.username.toLowerCase()));
     for (const a of plan) console.log(`${existing.has(a.username) ? 'exists ' : 'new    '} ${a.username.padEnd(28)} ${ROLE_LABELS[a.role].padEnd(28)} ${a.area}`);
-    console.log(`\n${plan.length} accounts in the standard set, ${plan.filter((a) => !existing.has(a.username)).length} not created yet.`);
+    console.log(`\n${plan.length} accounts of the standard set are missing, ${plan.filter((a) => !existing.has(a.username)).length} of them not created yet.`);
   } else {
     const { created, skipped } = await provisionAdminAccounts();
     if (created.length) {

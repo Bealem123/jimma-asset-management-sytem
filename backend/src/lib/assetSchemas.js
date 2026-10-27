@@ -2,8 +2,10 @@ import { z } from 'zod';
 import { db } from '../db.js';
 import { HttpError } from '../middleware/errors.js';
 import { ACQUISITION_METHODS, CONDITIONS, OWNERSHIP_TYPES } from './constants.js';
+import { latInJimma, lngInJimma } from './jimma.js';
 import {
-  bool, lat, lng, money, oneOf, optDate, optIdRef, optStr, idRef, reqStr,
+  bool, idRef, lat, lng, money, oneOf, optIdRef, optNameText, optPastDate, optPersonName, optRegistrationNum,
+  optSerial, optStr, optOrgName, reqOrgName, reqStr, usefulLifeYears,
 } from './schemas.js';
 
 export const ASSET_FIELDS = [
@@ -12,8 +14,6 @@ export const ASSET_FIELDS = [
   'condition', 'acquisition_date', 'acquisition_cost', 'serial_number', 'registration_number', 'function_use', 'is_reservable',
   'useful_life_years', 'salvage_value',
 ];
-
-const optInt = z.preprocess((v) => (v === '' || v === undefined ? null : v), z.coerce.number().int().min(1).max(200).nullable()).default(null);
 
 export const assetSchema = z.object({
   name: reqStr(200, 'Asset name'),
@@ -26,21 +26,21 @@ export const assetSchema = z.object({
   kifle_ketema_id: optIdRef,
   kebele_id: optIdRef,
   location_detail: optStr(255),
-  latitude: lat,
-  longitude: lng,
+  latitude: lat.refine(latInJimma, 'This latitude is outside Jimma City. Jimma lies around 7.67, 36.83: check the coordinates.'),
+  longitude: lng.refine(lngInJimma, 'This longitude is outside Jimma City. Jimma lies around 7.67, 36.83: check the coordinates.'),
   ownership_type: oneOf(OWNERSHIP_TYPES, 'Ownership type').default('OWNED'),
-  owner_name: reqStr(200, 'Owner').default('Jimma City Administration'),
-  responsible_officer: optStr(160),
-  responsible_office: optStr(200),
-  current_holder: optStr(200),
+  owner_name: reqOrgName(200, 'Owner').default('Jimma City Administration'),
+  responsible_officer: optPersonName(160, 'Responsible officer'),
+  responsible_office: optNameText(200, 'Responsible office'),
+  current_holder: optNameText(200, 'Current user / holder'),
   condition: oneOf(CONDITIONS, 'Condition').default('GOOD'),
-  acquisition_date: optDate,
+  acquisition_date: optPastDate,
   acquisition_cost: money,
-  serial_number: optStr(120),
-  registration_number: optStr(120),
+  serial_number: optSerial,
+  registration_number: optRegistrationNum,
   function_use: optStr(160),
   is_reservable: bool.default(false),
-  useful_life_years: optInt,
+  useful_life_years: usefulLifeYears,
   salvage_value: money,
   details: z.record(z.string(), z.unknown()).nullish(), // the sector's own fields, checked against lib/sectorFields.js
 });
@@ -48,15 +48,15 @@ export const assetSchema = z.object({
 export const acquisitionSchema = z.object({
   method: oneOf(ACQUISITION_METHODS, 'Acquisition method'),
   procurement_ref: optStr(120),
-  supplier_name: optStr(200),
+  supplier_name: optOrgName(200, 'Supplier name'),
   supplier_contact: optStr(200),
   contract_ref: optStr(120),
   invoice_ref: optStr(120),
-  acquisition_date: optDate,
+  acquisition_date: optPastDate,
   cost: money,
   approval_ref: optStr(160),
-  approved_by_name: optStr(200),
-  approved_on: optDate,
+  approved_by_name: optPersonName(200, 'Approved by'),
+  approved_on: optPastDate,
   notes: optStr(2000),
 });
 

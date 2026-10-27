@@ -11,7 +11,7 @@ import {
   Bars, Columns, Donut, Ring, StackBar, Tile, monthLabel,
 } from '../components/charts.jsx';
 import { t } from '../i18n.jsx';
-import { AreaTable, WaitNote } from './Performance.jsx';
+import { AreaTable, WAIT_BAD, WaitNote } from './Performance.jsx';
 import ActivityCard from '../components/Activity.jsx';
 
 // One dashboard per level of responsibility. All read the same /dashboard data, which the server already limits
@@ -51,11 +51,12 @@ function Shortcuts({ title = 'Go to', items }) {
   );
 }
 
-function Money({ d, items }) {
+/** The money row of a dashboard; `plain` leaves its tiles white, `white` too but keeps their icons coloured. */
+function Money({ d, items, plain, white }) {
   if (!d.can_see_money) return null;
   return (
     <div className="grid grid-tiles" style={{ marginTop: 16 }} role="list" aria-label={t('Financial summary')}>
-      {items.map(([value, caption, note, icon = 'coin']) => <Tile key={caption} icon={icon} hue={caption === 'Current valuation' ? 1 : undefined} value={compactEtb(value)} caption={caption} note={note} />)}
+      {items.map(([value, caption, note, icon = 'coin']) => <Tile key={caption} plain={white} icon={icon} hue={plain ? 0 : caption === 'Current valuation' ? 1 : undefined} value={compactEtb(value)} caption={caption} note={note} />)}
     </div>
   );
 }
@@ -188,16 +189,20 @@ export function SuperDashboard({ d }) {
       {d.setup?.kifle_ketemas_without_inspector > 0 && (
         <Alert kind="info">{t('{n} Kifle Ketema(s) have no Inspector; nobody can record inspections there.', { n: num(d.setup.kifle_ketemas_without_inspector) })} <Link to="/users">{t('Create the Inspectors')}</Link></Alert>
       )}
+      {d.setup?.kebeles_without_admin > 0 && (
+        <Alert kind="info">{t('{n} Kebele(s) have no Kebele Administrator; assets registered there cannot be verified on site. Their Kifle Ketema Administrator creates this account.', { n: num(d.setup.kebeles_without_admin) })}</Alert>
+      )}
 
       <div className="grid grid-tiles" role="list" aria-label={t('Key figures')}>
         <Tile feature icon="assets" spark={growth(d)} value={num(tot.assets)} caption="Total assets" note={t('{n} approved and active', { n: num(tot.active) })} to="/assets" />
         <Tile icon="approvals" value={num(status(d, 'ACTIVE'))} caption="Active" note={t('{n} inactive', { n: num(status(d, 'INACTIVE')) })} to="/assets?status=ACTIVE" />
         <Tile icon="wrench" value={num(status(d, 'UNDER_MAINTENANCE'))} caption="Under maintenance" to="/assets?status=UNDER_MAINTENANCE" />
         <Tile icon="alert" value={num(status(d, 'DAMAGED'))} caption="Damaged" to="/assets?status=DAMAGED" tone={status(d, 'DAMAGED') ? 'warn' : undefined} />
-        <Tile icon="search" value={num(status(d, 'LOST'))} caption="Missing / lost" to="/assets?status=LOST" tone={status(d, 'LOST') ? 'bad' : undefined} />
-        <Tile icon="audit" value={num(waiting)} caption="Pending approvals" note={t('{a} registrations · {b} requests', { a: num(tot.pending_approval), b: num(tot.pending_requests) })} tone={waiting ? 'warn' : undefined} />
-        <Tile icon="import" value={num(transfers)} caption="Pending transfers" />
-        <Tile icon="logout" value={num(disposals)} caption="Pending disposals" note="Disposal and retirement requests" />
+        {/* the second row is white, warnings included: only its icons are coloured */}
+        <Tile plain icon="search" value={num(status(d, 'LOST'))} caption="Missing / lost" to="/assets?status=LOST" />
+        <Tile plain icon="audit" value={num(waiting)} caption="Pending approvals" note={t('{a} registrations · {b} requests', { a: num(tot.pending_approval), b: num(tot.pending_requests) })} />
+        <Tile plain icon="import" value={num(transfers)} caption="Pending transfers" />
+        <Tile plain icon="logout" value={num(disposals)} caption="Pending disposals" note="Disposal and retirement requests" />
       </div>
       <Money d={d} items={[[tot.acquisition_cost, 'Acquisition cost', 'All assets in the city'], [tot.current_valuation, 'Current valuation'], [tot.maintenance_cost, 'Maintenance spending', undefined, 'wrench'], [tot.revenue_received, 'Revenue recorded on assets', undefined, 'performance']]} />
 
@@ -287,6 +292,10 @@ export function ExecutiveDashboard({ d }) {
 
 // ---------------------------------------------------------------------------------------------- Kifle Ketema Administrator
 
+// An approver's waiting items: the oldest one's age in the note, red once it is over the limit of Performance by area
+const waitNote = (days, fallback) => (days != null ? t('Oldest has waited {n} days', { n: num(days) }) : fallback);
+const waitTone = (n, days) => (days != null && days >= WAIT_BAD ? 'bad' : n ? 'warn' : undefined);
+
 export function KifleDashboard({ d }) {
   const { user } = useAuth();
   const lk = useLookups();
@@ -300,15 +309,16 @@ export function KifleDashboard({ d }) {
       {myKebeles.length === 0 && <Alert kind="info">{t('No Kebele is linked to your Kifle Ketema yet. The Super Administrator links them in Master data.')}</Alert>}
       <div className="grid grid-tiles" role="list" aria-label={t('Key figures')}>
         <Tile feature icon="assets" spark={growth(d)} value={num(tot.assets)} caption="Total assets" note={t('{n} approved and active', { n: num(tot.active) })} to="/assets" />
-        <Tile icon="approvals" value={num(toApprove)} caption="Waiting for your approval" note="Verified by the Kebele Administrator" to="/approvals" tone={toApprove ? 'warn' : undefined} />
-        <Tile icon="reports" value={num(tot.pending_requests)} caption="Requests to decide" note="Transfers, disposals, ownership changes" to="/approvals" tone={tot.pending_requests ? 'warn' : undefined} />
-        <Tile icon="audit" value={num(approval(d, 'SUBMITTED'))} caption="Awaiting Kebele verification" note="Registered, not yet checked physically" />
-        <Tile icon="verification" value={num(tot.open_discrepancies)} caption="Verification discrepancies" to="/verification" tone={tot.open_discrepancies ? 'bad' : undefined} />
-        <Tile icon="wrench" value={num(tot.maintenance_overdue + tot.maintenance_due_soon)} caption="Maintenance due" note={t('{n} overdue', { n: num(tot.maintenance_overdue) })} tone={tot.maintenance_overdue ? 'bad' : undefined} />
-        <Tile icon="alert" value={num(status(d, 'DAMAGED'))} caption="Damaged" to="/assets?status=DAMAGED" tone={status(d, 'DAMAGED') ? 'warn' : undefined} />
-        <Tile icon="search" value={num(status(d, 'LOST'))} caption="Missing / lost" to="/assets?status=LOST" tone={status(d, 'LOST') ? 'bad' : undefined} />
+        <Tile icon="approvals" value={num(toApprove)} caption="Waiting for your approval" note={waitNote(tot.oldest_approval_days, 'Verified by the Kebele Administrator')} to="/approvals?tab=REVIEWED" tone={waitTone(toApprove, tot.oldest_approval_days)} />
+        <Tile icon="reports" value={num(tot.pending_requests)} caption="Requests to decide" note={waitNote(tot.oldest_request_days, 'Transfers, disposals, ownership changes')} to="/approvals?tab=requests" tone={waitTone(tot.pending_requests, tot.oldest_request_days)} />
+        <Tile icon="audit" value={num(approval(d, 'SUBMITTED'))} caption="Awaiting Kebele verification" note="Registered, not yet checked physically" to="/approvals?tab=SUBMITTED" />
+        {/* the second row and the money row are white, warnings included: only their icons are coloured */}
+        <Tile plain icon="verification" value={num(tot.open_discrepancies)} caption="Verification discrepancies" to="/verification" />
+        <Tile plain icon="wrench" value={num(tot.maintenance_overdue + tot.maintenance_due_soon)} caption="Maintenance due" note={t('{n} overdue', { n: num(tot.maintenance_overdue) })} to="/assets?maintenance=due" />
+        <Tile plain icon="alert" value={num(status(d, 'DAMAGED'))} caption="Damaged" to="/assets?status=DAMAGED" />
+        <Tile plain icon="search" value={num(status(d, 'LOST'))} caption="Missing / lost" to="/assets?status=LOST" />
       </div>
-      <Money d={d} items={[[tot.acquisition_cost, 'Acquisition cost'], [tot.current_valuation, 'Current valuation'], [tot.maintenance_cost, 'Maintenance spending', undefined, 'wrench']]} />
+      <Money white d={d} items={[[tot.acquisition_cost, 'Acquisition cost'], [tot.current_valuation, 'Current valuation'], [tot.maintenance_cost, 'Maintenance spending', undefined, 'wrench']]} />
 
       <div className="grid grid-3" style={{ marginTop: 16 }}>
         <PipelineCard d={d} note="Registrations in your Kifle Ketema, by where they stand." />
@@ -321,7 +331,7 @@ export function KifleDashboard({ d }) {
         </section>
         <section className="card"><h2>{t('Assets by sector')}</h2><Bars hue={3} rows={d.by_sector} to={(r) => `/assets?sector_id=${r.id}`} /></section>
         <Shortcuts items={[
-          ['/approvals', 'Approvals', toApprove + tot.pending_requests, toApprove + tot.pending_requests ? 'warn' : undefined],
+          ['/approvals?tab=REVIEWED', 'Approvals', toApprove + tot.pending_requests, toApprove + tot.pending_requests ? 'warn' : undefined],
           ['/users', 'Kebele Administrators and sector administrators'],
           ['/performance', 'Performance of your Kebeles'],
           ['/map', 'Kifle Ketema map'],
@@ -383,12 +393,12 @@ export function KebeleDashboard({ d }) {
       <PageHeader title={`${mine || t('Your Kebele')}: physical verification`} subtitle="Your Kebele only. Check that each registered asset really exists where it says, and report anything missing, damaged or wrongly recorded." />
       <div className="grid grid-tiles" role="list" aria-label={t('Key figures')}>
         <Tile feature icon="assets" spark={growth(d)} value={num(tot.assets)} caption="Total assets" to="/assets" />
-        <Tile icon="verification" value={num(toVerify)} caption="Waiting for your verification" note="Registered by the sector administrators" to="/approvals" tone={toVerify ? 'warn' : undefined} />
+        <Tile icon="verification" value={num(toVerify)} caption="Waiting for your verification" note="Registered by the sector administrators" to="/approvals?tab=SUBMITTED" tone={toVerify ? 'warn' : undefined} />
         <Tile icon="map" value={num(tot.open_discrepancies)} caption="Verification discrepancies" note="Found elsewhere, missing or duplicated" to="/verification" tone={tot.open_discrepancies ? 'bad' : undefined} />
         <Tile icon="search" value={num(status(d, 'LOST'))} caption="Missing / lost" to="/assets?status=LOST" tone={status(d, 'LOST') ? 'bad' : undefined} />
         <Tile icon="alert" value={num(status(d, 'DAMAGED'))} caption="Damaged" to="/assets?status=DAMAGED" tone={status(d, 'DAMAGED') ? 'warn' : undefined} />
         <Tile icon="alert" value={num(condition(d, 'CRITICAL'))} caption="Critical condition" to="/assets?condition=CRITICAL" tone={condition(d, 'CRITICAL') ? 'bad' : undefined} />
-        <Tile icon="wrench" value={num(tot.maintenance_overdue + tot.maintenance_due_soon)} caption="Maintenance due" note={t('{n} overdue', { n: num(tot.maintenance_overdue) })} tone={tot.maintenance_overdue ? 'bad' : undefined} />
+        <Tile icon="wrench" value={num(tot.maintenance_overdue + tot.maintenance_due_soon)} caption="Maintenance due" note={t('{n} overdue', { n: num(tot.maintenance_overdue) })} to="/assets?maintenance=due" tone={tot.maintenance_overdue ? 'bad' : undefined} />
         <Tile icon="followups" value={num(tot.open_follow_ups)} caption="Open follow-up actions" to="/follow-ups" />
       </div>
 
@@ -436,12 +446,13 @@ export function SectorDashboard({ d }) {
         <Tile icon="register" value={num(rejected)} caption="Drafts and returned" note="Finish and submit, or correct what was sent back" to="/assets?approval_state=DRAFT" tone={rejected ? 'warn' : undefined} />
         <Tile icon="audit" value={num(awaiting)} caption="Awaiting verification and approval" note={t('{a} with the Kebele · {b} with the Kifle Ketema', { a: num(approval(d, 'SUBMITTED')), b: num(approval(d, 'REVIEWED')) })} />
         <Tile icon="approvals" value={num(tot.active)} caption="Active" note="Approved and in operation" to="/assets?approval_state=ACTIVE" />
-        <Tile icon="wrench" value={num(status(d, 'UNDER_MAINTENANCE'))} caption="Under maintenance" note={t('{n} open jobs', { n: num(tot.open_maintenance_jobs) })} to="/assets?status=UNDER_MAINTENANCE" />
-        <Tile icon="alert" value={num(status(d, 'DAMAGED'))} caption="Damaged" to="/assets?status=DAMAGED" tone={status(d, 'DAMAGED') ? 'warn' : undefined} />
-        <Tile icon="search" value={num(status(d, 'LOST'))} caption="Missing / lost" to="/assets?status=LOST" tone={status(d, 'LOST') ? 'bad' : undefined} />
-        <Tile icon="verification" value={num(tot.inspection_due)} caption="Due for inspection" note={t('within {n} days', { n: d.maintenance_due_window_days })} tone={tot.inspection_due ? 'warn' : undefined} />
+        {/* the second row and the money row are plain, warnings included: only the four headline figures above are coloured */}
+        <Tile icon="wrench" hue={0} value={num(status(d, 'UNDER_MAINTENANCE'))} caption="Under maintenance" note={t('{n} open jobs', { n: num(tot.open_maintenance_jobs) })} to="/assets?status=UNDER_MAINTENANCE" />
+        <Tile icon="alert" hue={0} value={num(status(d, 'DAMAGED'))} caption="Damaged" to="/assets?status=DAMAGED" />
+        <Tile icon="search" hue={0} value={num(status(d, 'LOST'))} caption="Missing / lost" to="/assets?status=LOST" />
+        <Tile icon="verification" hue={0} value={num(tot.inspection_due)} caption="Due for inspection" note={t('within {n} days', { n: d.maintenance_due_window_days })} />
       </div>
-      <Money d={d} items={[[tot.acquisition_cost, 'Acquisition cost'], [tot.current_valuation, 'Current valuation'], [tot.maintenance_cost, 'Maintenance spending', undefined, 'wrench']]} />
+      <Money plain d={d} items={[[tot.acquisition_cost, 'Acquisition cost'], [tot.current_valuation, 'Current valuation'], [tot.maintenance_cost, 'Maintenance spending', undefined, 'wrench']]} />
 
       <div className="grid grid-3" style={{ marginTop: 16 }}>
         <PipelineCard d={d} title="Your registrations" note="Where each of your assets stands in the approval chain." />
@@ -460,3 +471,141 @@ export function SectorDashboard({ d }) {
     </>
   );
 }
+
+// ---------------------------------------------------------------------------------------------- Financial Officer
+
+export function FinanceDashboard({ d }) {
+  const { user } = useAuth();
+  const lk = useLookups();
+  const tot = d.totals;
+  const mine = lk.kifle.filter((k) => user.scope.kifle.includes(k.id)).map((k) => t(k.name)).join(', ');
+
+  const { data: fin, loading: finLoading } = useAsync(() => api.get('/finance/overview'), []);
+  const fTot = fin?.totals;
+
+  // the assets still to value, or to value again (the Valuation backlog list); unknown until the figures arrive
+  const valuationBacklog = fTot ? (fTot.unvalued_count + fTot.revaluation_due_count) : null;
+
+  return (
+    <>
+      <PageHeader
+        title={`${mine || t('Assigned Kifle Ketema')}: ${t('Financial portfolio & valuations')}`}
+        subtitle="Your assigned jurisdiction only. Manage asset valuations, track municipal revenues, monitor capital investments and resolve valuation backlogs."
+      >
+        <Link to="/finance" className="btn btn-primary">{t('Financial management')}</Link>
+      </PageHeader>
+
+      <div className="grid grid-tiles" role="list" aria-label={t('Financial key figures')}>
+        <Tile
+          feature
+          icon="coin"
+          value={compactEtb(tot.current_valuation || fTot?.total_valuation)}
+          caption="Total portfolio valuation"
+          note={fTot ? t('{n}% coverage ({v} of {a} assets valued)', { n: fTot.valuation_coverage_pct, v: num(fTot.valued_count), a: num(fTot.total_assets) }) : t('All valued assets in your area')}
+          to="/finance?tab=valuations"
+        />
+        <Tile
+          icon="performance"
+          value={compactEtb(tot.revenue_received || fTot?.total_revenue)}
+          caption="Municipal revenue"
+          note={fTot ? t('{n} recorded transaction(s)', { n: num(fTot.revenue_count) }) : t('Rent, lease and concession income')}
+          to="/finance?tab=revenues"
+        />
+        <Tile
+          icon="coin"
+          value={compactEtb(tot.acquisition_cost || fTot?.total_acquisition)}
+          caption="Acquisition cost"
+          note={t('Recorded capital investment')}
+          to="/assets"
+        />
+        <Tile
+          icon="wrench"
+          value={compactEtb(tot.maintenance_cost || fTot?.total_maintenance)}
+          caption="Maintenance spending"
+          note={t('All recorded maintenance jobs')}
+        />
+        {/* the second row is white, warnings included: only its icons are coloured */}
+        <Tile
+          plain
+          icon="alert"
+          value={valuationBacklog == null ? '—' : num(valuationBacklog)}
+          caption="Valuation backlog"
+          note={t('Assets unvalued or annual review overdue')}
+          to="/finance?tab=backlog"
+        />
+        <Tile
+          plain
+          icon="assets"
+          value={num(tot.generating_revenue || 0)}
+          caption="Revenue generating assets"
+          note={t('{n} non-revenue assets', { n: num(tot.not_generating_revenue || 0) })}
+          to="/assets?revenue=yes"
+        />
+      </div>
+
+      <div className="grid grid-3" style={{ marginTop: 16 }}>
+        <section className="card span-2">
+          <div className="card-head">
+            <h2>{t('Valuation & capital investment by sector')}</h2>
+            <Link to="/finance?tab=analysis">{t('Financial breakdown')}</Link>
+          </div>
+          {finLoading ? <Loading /> : (
+            <Table
+              head={['Sector', 'Assets', 'Valuation (ETB)', 'Acquisition cost (ETB)']}
+              empty={!fin?.by_sector?.length && 'No sector assets in your area.'}
+            >
+              {(fin?.by_sector || []).map((s) => (
+                <tr key={s.id}>
+                  <td><strong>{s.code}</strong> · {t(s.name)}</td>
+                  <td>{num(s.count)}</td>
+                  <td style={{ fontWeight: 600 }}>{compactEtb(s.valuation)}</td>
+                  <td>{compactEtb(s.acquisition)}</td>
+                </tr>
+              ))}
+            </Table>
+          )}
+        </section>
+
+        <Shortcuts
+          title="Financial shortcuts"
+          items={[
+            ['/finance?tab=backlog', 'Resolve valuation backlog', fTot?.unvalued_count, fTot?.unvalued_count ? 'warn' : undefined],
+            ['/finance?action=valuation', 'Record asset valuation'],
+            ['/finance?action=revenue', 'Record municipal revenue'],
+            ['/finance?tab=valuations', 'Valuations ledger', fTot?.valued_count],
+            ['/finance?tab=revenues', 'Municipal revenues', fTot?.revenue_count],
+            ['/monthly-reports', 'Submit monthly financial report'],
+            ['/analytics', 'Financial & depreciation analytics'],
+          ]}
+        />
+
+        <section className="card">
+          <h2>{t('Municipal revenue by type')}</h2>
+          {finLoading ? <Loading /> : (
+            <ul className="plain-list">
+              {(fin?.by_revenue_type || []).map((rt) => (
+                <li key={rt.type} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span>
+                    <Badge value={rt.type} text={label(rt.type)} />
+                    <small className="muted" style={{ marginLeft: 6 }}>({num(rt.count)})</small>
+                  </span>
+                  <strong style={{ color: '#30d158' }}>{compactEtb(rt.total)}</strong>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <section className="card">
+          <h2>{t('Assets by category')}</h2>
+          <Bars hue={4} rows={d.by_category} to={(r) => `/assets?category_id=${r.id}`} />
+        </section>
+
+        <ConditionCard d={d} />
+      </div>
+
+      <Recent d={d} title="Recent financial & asset activity" />
+    </>
+  );
+}
+

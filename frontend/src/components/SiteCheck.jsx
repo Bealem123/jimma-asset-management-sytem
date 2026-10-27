@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { api } from '../api.js';
 import { label, today } from '../format.js';
+import { useLookups } from '../lookups.jsx';
 import { Alert, Field, Loading } from './ui.jsx';
 import AuthImage from './AuthImage.jsx';
 import { t } from '../i18n.jsx';
@@ -29,7 +30,11 @@ function Step({ n, title, done, children }) {
   );
 }
 
-export default function SiteCheck({ asset, maxDistance, onDone, onCancel }) {
+const DEFAULT_BOUNDS = [7.58, 36.72, 7.78, 36.95]; // Jimma City (south, west, north, east); the server sends its own
+
+/** `maxDistance` / `maxAccuracy`: the server's limits (metres) for standing at the asset and for the reading's precision. */
+export default function SiteCheck({ asset, maxDistance, maxAccuracy, onDone, onCancel }) {
+  const lk = useLookups();
   const [pos, setPos] = useState(null); // { latitude, longitude, accuracy_m }
   const [locating, setLocating] = useState(false);
   const [locError, setLocError] = useState('');
@@ -45,6 +50,7 @@ export default function SiteCheck({ asset, maxDistance, onDone, onCancel }) {
   const [uploadedId, setUploadedId] = useState(null); // the photo, once sent
 
   useEffect(() => () => { if (preview) URL.revokeObjectURL(preview); }, [preview]);
+  useEffect(() => { locate(); }, []); // eslint-disable-line react-hooks/exhaustive-deps -- measured as the window opens: one tap less
 
   function locate() {
     setLocError('');
@@ -65,23 +71,37 @@ export default function SiteCheck({ asset, maxDistance, onDone, onCancel }) {
 
   async function pickPhoto(e) {
     const file = e.target.files?.[0];
+    e.target.value = ''; // the same photo can be chosen again after removing it
     if (!file) return;
     const small = await shrinkPhoto(file, 'site-verification.jpg');
     setPhoto(small);
     setUploadedId(null);
     setPreview(URL.createObjectURL(small));
   }
+  const removePhoto = () => { setPhoto(null); setPreview(''); setUploadedId(null); };
 
+  const [south, west, north, east] = lk.enums?.jimma_bounds || DEFAULT_BOUNDS;
+  // a laptop (or a phone without GPS) guesses its place from the internet connection: often Addis Ababa, or abroad
+  const inJimma = pos && pos.latitude >= south && pos.latitude <= north && pos.longitude >= west && pos.longitude <= east;
   const recorded = asset.latitude != null && asset.longitude != null;
-  const distance = pos && recorded ? distanceMeters(asset.latitude, asset.longitude, pos.latitude, pos.longitude) : null;
-  const allowed = Math.max(maxDistance, pos?.accuracy_m || 0);
-  const far = distance != null && distance > allowed;
+  const distance = inJimma && recorded ? distanceMeters(asset.latitude, asset.longitude, pos.latitude, pos.longitude) : null;
+  // the same two limits as the server: a reading precise enough, taken close enough to the asset
+  const rough = inJimma && pos.accuracy_m > maxAccuracy;
+  const far = !rough && distance != null && distance > maxDistance;
+  const placed = inJimma && !rough && !far;
   const ownLabel = isOwnLabel(qr, asset.asset_code);
-  const ready = pos && photo && condition;
+  const missing = [
+    !inJimma && t('your location in Jimma'),
+    rough && t('a location precise to ± {n} m', { n: maxAccuracy }),
+    far && t('to stand within {n} m of the asset', { n: maxDistance }),
+    !photo && t('a photo of the asset'),
+    !condition && t('the condition you found'),
+  ].filter(Boolean);
+  const ready = missing.length === 0;
 
   async function submit(e) {
     e.preventDefault();
-    if (!ready) { setError(t('Get your location, take a photo and choose the condition you found.')); return; }
+    if (!ready) { setError(t('Still needed: {list}.', { list: missing.join(', ') })); return; }
     setBusy(true); setError('');
     try {
       let docId = uploadedId;
@@ -107,23 +127,26 @@ export default function SiteCheck({ asset, maxDistance, onDone, onCancel }) {
 
   return (
     <form onSubmit={submit} className="site-check">
-      <p className="muted" style={{ marginTop: 0 }}>
+      <p className="muted small" style={{ margin: 0 }}>
         {t('Do this at the asset, on your phone. The Kifle Ketema Administrator sees this evidence before approving. If the asset is not as recorded, send it back instead.')}
       </p>
 
-      <Step n={1} title="Your location" done={Boolean(pos)}>
+      <Step n={1} title="Your location" done={placed}>
         {pos ? (
           <div className="site-result">
-            <div>{pos.latitude.toFixed(6)}, {pos.longitude.toFixed(6)} <span className="muted small">± {pos.accuracy_m} m</span></div>
-            {distance != null && (
-              <span className={`badge badge-${far ? 'bad' : 'good'}`}>
-                {far ? t('{n} m from the recorded location: further than the {max} m allowed', { n: distance, max: allowed }) : t('{n} m from the recorded location', { n: distance })}
-              </span>
+            <span>{pos.latitude.toFixed(6)}, {pos.longitude.toFixed(6)} <span className={`small ${rough ? 'text-bad' : 'muted'}`}>± {pos.accuracy_m} m</span></span>
+            {inJimma && !rough && distance != null && (
+              <span className={`badge badge-${far ? 'bad' : 'good'}`}>{t('{n} m from the recorded location', { n: distance })}</span>
             )}
-            {!recorded && <span className="badge badge-info">{t('No location was recorded: this one will be saved as the asset\'s location')}</span>}
-            <button type="button" className="btn btn-small" onClick={locate} disabled={locating}>{t('Measure again')}</button>
+            {placed && !recorded && <span className="badge badge-info">{t('No location was recorded: this one will be saved as the asset\'s location')}</span>}
+            <button type="button" className="btn btn-small" onClick={locate} disabled={locating}>{locating ? t('Finding your location…') : t('Measure again')}</button>
           </div>
         ) : <button type="button" className="btn btn-primary" onClick={locate} disabled={locating}>{locating ? t('Finding your location…') : t('Get my location')}</button>}
+        {pos && !inJimma && (
+          <Alert kind="warn">{t('This position is outside Jimma City. Your device is guessing where it is from its internet connection; this happens on a computer. Open this page on a phone with location (GPS) turned on, standing at the asset.')}</Alert>
+        )}
+        {rough && <Alert kind="warn">{t('Your location is only precise to ± {n} m; it must be within ± {max} m. Step outside, wait for the GPS and measure again.', { n: pos.accuracy_m, max: maxAccuracy })}</Alert>}
+        {far && <Alert kind="warn">{t('You are {n} m from where this asset is recorded; you must be within {max} m to verify it. Go to the asset and measure again. If the recorded location is wrong, send the registration back to be corrected.', { n: distance, max: maxDistance })}</Alert>}
         {locError && <Alert kind="warn">{locError}</Alert>}
       </Step>
 
@@ -148,8 +171,15 @@ export default function SiteCheck({ asset, maxDistance, onDone, onCancel }) {
       </Step>
 
       <Step n={3} title="Take a photo of the asset" done={Boolean(photo)}>
-        <input type="file" accept="image/*" capture="environment" onChange={pickPhoto} aria-label={t('Take a photo of the asset')} />
-        {preview && <img src={preview} alt={t('The photo that will be sent')} className="site-photo" />}
+        <div className="site-result">
+          {preview && <img src={preview} alt={t('The photo that will be sent')} className="site-photo" />}
+          {/* on a phone this opens the back camera; on a computer it asks for a file */}
+          <label className={`btn btn-small${photo ? '' : ' btn-primary'}`}>
+            {t(photo ? 'Retake photo' : 'Take a photo')}
+            <input type="file" accept="image/*" capture="environment" onChange={pickPhoto} className="sr-only" />
+          </label>
+          {photo && <button type="button" className="btn btn-small btn-ghost" onClick={removePhoto}>{t('Remove')}</button>}
+        </div>
       </Step>
 
       <Step n={4} title="What you found" done={Boolean(condition)}>
@@ -168,7 +198,8 @@ export default function SiteCheck({ asset, maxDistance, onDone, onCancel }) {
 
       {error && <Alert>{error}</Alert>}
       <div className="form-actions">
-        <button type="button" className="btn" onClick={onCancel}>{t('Cancel')}</button>
+        {!ready && <span className="muted small site-missing">{t('Still needed: {list}.', { list: missing.join(', ') })}</span>}
+        <button type="button" className="btn btn-cancel" onClick={onCancel}>{t('Cancel')}</button>
         <button type="submit" className="btn btn-primary" disabled={busy || !ready}>{busy ? t('Sending…') : t('Verify on site')}</button>
       </div>
     </form>

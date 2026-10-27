@@ -8,11 +8,13 @@ import { fieldsFor } from './sectorFields.js';
 // money, people's names, the exact GPS position, serial / chassis / engine numbers, title deeds, contracts or licences,
 // documents other than photos, or the history.
 
+export const newToken = () => crypto.randomBytes(12).toString('base64url'); // 16 characters
+
 /** The asset's public token (made the first time its QR code is drawn). */
 export async function ensureToken(asset) {
   if (asset.public_token) return asset.public_token;
   for (let i = 0; i < 5; i++) {
-    const token = crypto.randomBytes(12).toString('base64url'); // 16 characters
+    const token = newToken();
     const updated = await db('assets').where({ id: asset.id }).whereNull('public_token').update({ public_token: token }).catch(() => 0);
     if (updated) return token;
     const again = await db('assets').where({ id: asset.id }).first('public_token');
@@ -23,8 +25,33 @@ export async function ensureToken(asset) {
 
 export const TOKEN_RE = /^[A-Za-z0-9_-]{16,32}$/;
 
+/** The public card address a QR label holds: <base>/a/<token>. */
+export const CARD_RE = /\/a\/([A-Za-z0-9_-]{16,32})\/?$/;
+
 /** The asset behind a token, or null. */
 export const assetByToken = (token) => (TOKEN_RE.test(token || '') ? db('assets').where({ public_token: token }).first() : null);
+
+/** A label that was replaced (its token no longer opens the asset), or null. */
+export const retiredLabel = (token) => (TOKEN_RE.test(token || '') ? db('asset_retired_labels').where({ token }).first() : null);
+
+export const RETIRED_LABEL = 'This label was replaced and no longer counts. Scan the new label on the asset.';
+
+/**
+ * What a scanned label stands for: { code } for one of this system's labels (the Asset ID, a URL ending in
+ * /scan/<code>, or the public card address /a/<token>), { retired } for a label that was replaced, or null.
+ */
+export async function readLabel(text) {
+  const s = String(text || '').trim();
+  const card = CARD_RE.exec(s);
+  if (card) {
+    const asset = await assetByToken(card[1]);
+    if (asset) return { code: asset.asset_code };
+    const retired = await retiredLabel(card[1]);
+    return retired ? { retired } : null;
+  }
+  const code = /AST-\d{6}/i.exec(s);
+  return code ? { code: code[0].toUpperCase() } : null;
+}
 
 /** Everything the public card shows, for the asset behind `token`; null when there is none. */
 export async function publicCard(token) {

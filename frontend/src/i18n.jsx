@@ -98,7 +98,8 @@ function translate(rawText, params) {
   if (template === undefined && !params) {
     for (const p of patterns) {
       const m = p.re.exec(text);
-      if (m) return p.value.replace(/\{(\w+)\}/g, (_, n) => m[p.names.indexOf(n) + 1] ?? `{${n}}`);
+      // a captured part that is itself translated (a field, a role, a sector...) is shown in the language too
+      if (m) return p.value.replace(/\{(\w+)\}/g, (_, n) => { const v = m[p.names.indexOf(n) + 1]; return v == null ? `{${n}}` : dict[v] ?? v; });
     }
   }
   template ??= text;

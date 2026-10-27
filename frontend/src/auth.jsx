@@ -3,6 +3,7 @@ import { api, setUnauthorizedHandler, tokenStore } from './api.js';
 import { getLanguage, hasChosen, useLanguage } from './i18n.jsx';
 
 const AuthContext = createContext(null);
+const IDLE_MINUTES = 30; // as the server's SESSION_IDLE_MINUTES
 export const useAuth = () => useContext(AuthContext);
 
 export function AuthProvider({ children }) {
@@ -21,11 +22,27 @@ export function AuthProvider({ children }) {
     }
   }, [setLang]);
 
-  const logout = useCallback((message = '') => {
+  // Signing out by choice also ends the session on the server, so the token stops working everywhere; when the
+  // server already ended it (a message is given), there is nothing left to end.
+  const logout = useCallback(async (message = '') => {
+    if (!message && tokenStore.get()) await api.post('/auth/logout').catch(() => {});
     tokenStore.clear();
     setUser(null);
     setNotice(message);
   }, []);
+
+  // A screen left without activity signs itself out (the server ends such a session too).
+  useEffect(() => {
+    if (!user) return undefined;
+    let last = Date.now();
+    const seen = () => { last = Date.now(); };
+    const events = ['pointerdown', 'keydown', 'scroll', 'touchstart'];
+    events.forEach((e) => window.addEventListener(e, seen, { passive: true }));
+    const timer = setInterval(() => {
+      if (Date.now() - last > IDLE_MINUTES * 60000) logout(`You were signed out after ${IDLE_MINUTES} minutes without activity.`);
+    }, 30000);
+    return () => { clearInterval(timer); events.forEach((e) => window.removeEventListener(e, seen)); };
+  }, [user, logout]);
 
   useEffect(() => {
     setUnauthorizedHandler(() => logout('Your session has ended. Please sign in again.'));

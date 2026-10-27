@@ -6,7 +6,7 @@ import { authenticate } from '../middleware/auth.js';
 import { parse } from '../middleware/errors.js';
 import { applyScope, has } from '../lib/permissions.js';
 import { REQUEST_STATUSES, REQUEST_TYPES } from '../lib/constants.js';
-import { optStr, oneOf } from '../lib/schemas.js';
+import { optStr, oneOf, likePattern } from '../lib/schemas.js';
 import {
   approveRequest, cancelRequest, getWorkflow, presentRequest, rejectRequest, reviewRequest,
 } from '../lib/requests.js';
@@ -19,13 +19,16 @@ const decorate = async (user, rows) => {
   for (const r of rows) {
     const wf = await getWorkflow(r.request_type);
     const open = ['PENDING', 'REVIEWED'].includes(r.status);
-    const mayDecide = has(user, 'request.decide') && open && !(config.separationOfDuties && r.requested_by === user.id);
+    const notOwn = !(config.separationOfDuties && r.requested_by === user.id);
+    // the Kebele Administrator reviews (step 1 of 2), the Kifle Ketema Administrator gives the final approval
+    const mayReview = has(user, 'request.review') && open && notOwn && wf.steps >= 2 && r.status === 'PENDING';
+    const mayDecide = has(user, 'request.decide') && open && notOwn;
     out.push({
       ...presentRequest(r),
       steps: wf.steps,
-      can_review: mayDecide && wf.steps >= 2 && r.status === 'PENDING',
+      can_review: mayReview,
       can_approve: mayDecide && (wf.steps < 2 || (r.status === 'REVIEWED' && !(config.separationOfDuties && r.reviewed_by === user.id))),
-      can_reject: mayDecide,
+      can_reject: mayDecide || mayReview,
       can_cancel: open && r.requested_by === user.id,
     });
   }
@@ -39,18 +42,41 @@ router.get('/', async (req, res) => {
     asset_id: z.coerce.number().int().positive().optional(),
     mine: z.enum(['1']).optional(),
     open: z.enum(['1']).optional(),
+    q: z.string().trim().max(100).optional(),
+    from: z.preprocess((v) => v || undefined, z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()),
+    to: z.preprocess((v) => v || undefined, z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()),
   }), req.query);
   const q = applyScope(
     db('approval_requests as r').join('assets', 'assets.id', 'r.asset_id')
-      .leftJoin('users as u', 'u.id', 'r.requested_by').leftJoin('users as d', 'd.id', 'r.decided_by'),
+      .leftJoin('users as u', 'u.id', 'r.requested_by').leftJoin('users as d', 'd.id', 'r.decided_by')
+      .leftJoin('users as rv', 'rv.id', 'r.reviewed_by'),
     req.user,
-  ).select('r.*', 'assets.asset_code', 'assets.name as asset_name', 'u.full_name as requested_by_name', 'd.full_name as decided_by_name')
+  ).select('r.*', 'assets.asset_code', 'assets.name as asset_name', 'u.full_name as requested_by_name', 'd.full_name as decided_by_name',
+    'rv.full_name as reviewed_by_name')
     .orderBy('r.id', 'desc').limit(300);
   if (f.status) q.where('r.status', f.status);
   if (f.open) q.whereIn('r.status', ['PENDING', 'REVIEWED']);
   if (f.type) q.where('r.request_type', f.type);
   if (f.asset_id) q.where('r.asset_id', f.asset_id);
-  if (f.mine) q.where('r.requested_by', req.user.id);
+  if (f.q) q.where((b) => b.where('assets.asset_code', 'like', likePattern(f.q)).orWhere('assets.name', 'like', likePattern(f.q)));
+  if (f.from) q.where('r.requested_at', '>=', f.from);
+  if (f.to) q.where('r.requested_at', '<=', `${f.to} 23:59:59`);
+  if (f.mine) {
+    if (req.user.role === 'KEBELE_ADMIN' && req.user.scope?.kebeles?.length) {
+      const kebeleUserIds = db('user_kebeles').whereIn('kebele_id', req.user.scope.kebeles).select('user_id');
+      q.where((b) => b.where('r.requested_by', req.user.id)
+        .orWhereIn('r.requested_by', kebeleUserIds)
+        .orWhereIn('assets.kebele_id', req.user.scope.kebeles));
+    } else if (req.user.role === 'KIFLE_ADMIN' && req.user.scope?.kifle?.length) {
+      const kifleKebeles = db('kebeles').whereIn('kifle_ketema_id', req.user.scope.kifle).select('id');
+      const kifleUserIds = db('user_kebeles').whereIn('kebele_id', kifleKebeles).select('user_id');
+      q.where((b) => b.where('r.requested_by', req.user.id)
+        .orWhereIn('r.requested_by', kifleUserIds)
+        .orWhereIn('assets.kifle_ketema_id', req.user.scope.kifle));
+    } else {
+      q.where('r.requested_by', req.user.id);
+    }
+  }
   res.json(await decorate(req.user, await q));
 });
 

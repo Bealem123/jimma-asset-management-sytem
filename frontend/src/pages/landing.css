@@ -8,7 +8,9 @@
   --lp-line: rgba(18, 22, 20, 0.14);
   --lp-on-photo: #ffffff;
   --lp-radius: 28px;
-  --lp-gutter: clamp(20px, 6.5vw, 96px);
+  /* side margin; on large screens it grows so the content stays within 1440px (it is used as padding, margin and left,
+     where % is the panel's width) */
+  --lp-gutter: max(clamp(16px, 6.5vw, 96px), calc((100% - 1440px) / 2));
   position: relative;
   background: #0f1513;
   color: var(--lp-ink);
@@ -32,7 +34,7 @@
 }
 .lp-logo { font-family: 'Playfair Display', Georgia, serif; font-size: 1.05rem; letter-spacing: 0.32em; margin: 0; white-space: nowrap; }
 .lp-logo b { font-weight: 700; letter-spacing: 0.32em; }
-.lp-links { display: flex; gap: 4px; }
+.lp-links, .lp-links-list { display: flex; gap: 4px; }
 .lp-links a { padding: 6px 14px; border-radius: 999px; font-size: 0.7rem; letter-spacing: 0.12em; text-transform: uppercase; transition: background 0.25s; }
 .lp-links a:hover { background: rgba(255, 255, 255, 0.14); }
 .lp-links a.is-on { background: #fff; color: #121614; }
@@ -40,6 +42,24 @@
 .lp-lang select { background: rgba(255, 255, 255, 0.12); color: #fff; border: 1px solid rgba(255, 255, 255, 0.35); box-shadow: none; font-size: 0.75rem; padding: 5px 12px 5px 34px; }
 .lp-lang select option { color: #121614; }
 .lp-lang .nav-icon { color: #fff; left: 10px; width: 16px; height: 16px; }
+.lp-lang-menu { display: none !important; } /* the menu panel's own copy, for phones */
+
+/* the menu button (tablets and phones): three lines that turn into a cross while the menu is open */
+.lp-menu-btn {
+  display: none; place-items: center; width: 40px; height: 40px; padding: 0; flex: none; cursor: pointer;
+  border-radius: 50%; border: 1px solid rgba(255, 255, 255, 0.4); background: rgba(255, 255, 255, 0.12); color: #fff;
+}
+.lp-menu-btn span, .lp-menu-btn span::before, .lp-menu-btn span::after {
+  display: block; width: 16px; height: 1.5px; border-radius: 2px; background: currentColor; transition: transform 0.25s ease, opacity 0.2s ease;
+}
+.lp-menu-btn span { position: relative; }
+.lp-menu-btn span::before, .lp-menu-btn span::after { content: ''; position: absolute; left: 0; }
+.lp-menu-btn span::before { top: -5px; }
+.lp-menu-btn span::after { top: 5px; }
+.lp-menu-btn[aria-expanded='true'] span { background: transparent; }
+.lp-menu-btn[aria-expanded='true'] span::before { transform: translateY(5px) rotate(45deg); background: #fff; }
+.lp-menu-btn[aria-expanded='true'] span::after { transform: translateY(-5px) rotate(-45deg); background: #fff; }
+.lp-menu-btn:focus-visible { outline: 2px solid #f0b45a; outline-offset: 3px; }
 
 /* ---------- pills and links ---------- */
 .lp-pill {
@@ -98,16 +118,78 @@
 
 /* ---------- hero ---------- */
 .lp-hero { --fallback: radial-gradient(ellipse 70% 45% at 50% 0%, rgba(240, 168, 72, 0.85), rgba(240, 168, 72, 0) 70%), linear-gradient(180deg, #8a5a2b 0%, #4b3a2a 30%, #262622 62%, #111412 100%); }
-/* the hero film covers the panel like a photo would: 16:9, centred, slightly enlarged to hide the player's edges */
-.lp-video { position: absolute !important; inset: 0; z-index: 0 !important; overflow: hidden; pointer-events: none; opacity: 0; transition: opacity 1.6s ease; }
-.lp-video.is-on { opacity: 1; }
-.lp-video iframe {
-  position: absolute; top: 50%; left: 50%; border: 0;
-  width: 100vw; height: 56.25vw; min-width: 177.78vh; min-height: 100vh;
-  transform: translate(-50%, -50%) scale(1.18);
-  opacity: 0; transition: opacity 1.2s ease; /* two players take turns (see HeroVideo): the shown one is visible */
+/* ---------- self-moving hero image slideshow ---------- */
+.lp-hero-slideshow {
+  position: absolute !important;
+  inset: 0;
+  z-index: 0 !important;
+  overflow: hidden;
+  pointer-events: none;
 }
-.lp-video iframe.is-shown { opacity: 1; }
+
+.lp-hero-slide {
+  position: absolute;
+  inset: -3%; /* slight margin for smooth pan/zoom */
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+  opacity: 0;
+  transform: scale(1.0);
+  transition: opacity 1.6s ease-in-out;
+  will-change: opacity, transform;
+}
+
+.lp-hero-slide.is-active {
+  opacity: 1;
+  animation: hero-ken-burns 12s infinite alternate ease-in-out;
+}
+
+@keyframes hero-ken-burns {
+  0% {
+    transform: scale(1.0) translate(0, 0);
+  }
+  50% {
+    transform: scale(1.07) translate(-1.2%, -0.8%);
+  }
+  100% {
+    transform: scale(1.04) translate(1%, 0.8%);
+  }
+}
+
+/* Subtle navigation indicator pills/dots */
+.lp-hero-dots {
+  position: absolute;
+  bottom: clamp(28px, 6vh, 52px);
+  right: clamp(20px, 4.5vw, 60px);
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.lp-hero-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  border: none;
+  background: rgba(255, 255, 255, 0.45);
+  cursor: pointer;
+  padding: 0;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+
+.lp-hero-dot:hover {
+  background: rgba(255, 255, 255, 0.85);
+  transform: scale(1.2);
+}
+
+.lp-hero-dot.is-active {
+  width: 28px;
+  background: #ffffff;
+  box-shadow: 0 0 12px rgba(255, 255, 255, 0.8), 0 2px 6px rgba(0, 0, 0, 0.4);
+}
 .lp-hero-text { position: absolute !important; left: max(var(--lp-gutter), 27vw); right: var(--lp-gutter); bottom: clamp(56px, 13vh, 140px); }
 .lp-hero h1 { font-size: clamp(2.2rem, 4.8vw, 4.4rem); line-height: 1.04; max-width: 13em; margin: 0; color: #fff; }
 .lp-begin { display: inline-flex; align-items: center; gap: 14px; margin-top: 30px; font-size: 0.68rem; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(255, 255, 255, 0.85) !important; }
@@ -162,7 +244,7 @@
 .lp-levels h2 { font-size: clamp(1.9rem, 3vw, 2.7rem); line-height: 1.1; margin: 0; }
 .lp-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 30px; }
 .lp-card { position: relative; aspect-ratio: 1.57; min-height: 280px; border-radius: 6px; overflow: hidden; isolation: isolate; display: flex; align-items: flex-start; }
-.lp-card .lp-shade { background: radial-gradient(ellipse 80% 75% at 20% 24%, rgba(8, 12, 10, 0.6), rgba(8, 12, 10, 0.26) 55%, rgba(8, 12, 10, 0) 88%); }
+.lp-card .lp-shade { background: radial-gradient(ellipse 80% 75% at 20% 24%, rgba(8, 12, 10, 0.5), rgba(8, 12, 10, 0.2) 55%, rgba(8, 12, 10, 0) 88%); }
 .lp-card-text { position: relative; z-index: 1; padding: 28px; max-width: 26rem; }
 .lp-card h3 { font-size: 1.45rem; margin: 0 0 10px; color: #fff; }
 .lp-card p { font-size: 0.82rem; margin: 12px 0 0; color: rgba(255, 255, 255, 0.86); }
@@ -176,8 +258,9 @@
 /* ---------- closing ---------- */
 .lp-closing { --fallback: radial-gradient(ellipse 60% 50% at 50% 10%, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0) 70%), linear-gradient(180deg, #c7d4d9 0%, #7f949c 40%, #3c5058 70%, #142025 100%); }
 .lp-closing .lp-feature-text { max-width: 34rem; }
-/* closing.jpg: Jimma at night, the monument at 57% across; narrower screens crop around it */
-.lp-closing { background-position: 57% 50%; }
+/* closing.jpg: 13 Kebeles joined into one register, the register at 68% across; narrower screens crop around it.
+   Shown at 80% of the panel's height, against the photo's own edge colours so no edge shows around it. */
+.lp-closing { background: var(--photo, none) 100% 50% / auto 80% no-repeat, linear-gradient(180deg, #0a1010, #0f171a); }
 .lp-big { font-size: clamp(2.1rem, 3.8vw, 3.4rem) !important; line-height: 1.05 !important; }
 
 /* ---------- footer ---------- */
@@ -199,21 +282,103 @@
   .lp-pill:hover { transform: none; }
 }
 
-/* ---------- smaller screens ---------- */
-@media (max-width: 900px) {
-  .lp-nav { grid-template-columns: 1fr auto; padding-top: 18px; }
-  .lp-links { display: none; }
-  .lp-about { grid-template-columns: 1fr; }
-  .lp-cards { grid-template-columns: 1fr; }
-  .lp-hero-text { left: var(--lp-gutter); }
+/* ---------- whole photos ----------
+   The photos are 2:1. Full-bleed (cover) they lose their sides on any squarer screen: a portrait tablet or phone keeps
+   barely a third of each. There the panel shows the whole photo under the text instead, on a blurred copy of itself.
+   The level cards always do this: they are never as wide as their photo.
+   The photo's edges fade into the blurred copy, so it has no frame or rectangle around it. Its box always has the photo's
+   own shape (2:1), so the fade falls on the photo's real edges. */
+.lp-photo {
+  display: none; position: relative; z-index: 1; flex: none; align-self: center; aspect-ratio: 2 / 1;
+  background: var(--photo, none) center / contain no-repeat;
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 12%, #000 88%, transparent), linear-gradient(to bottom, transparent, #000 16%, #000 84%, transparent);
+  -webkit-mask-composite: source-in;
+  mask-image: linear-gradient(to right, transparent, #000 12%, #000 88%, transparent), linear-gradient(to bottom, transparent, #000 16%, #000 84%, transparent);
+  mask-composite: intersect;
 }
+.lp-card::before {
+  content: ''; position: absolute; inset: -60px; z-index: -1; pointer-events: none;
+  background: var(--photo, none) center / cover no-repeat; filter: blur(32px) brightness(0.88);
+}
+.lp-card { flex-direction: column; align-items: stretch; background: var(--fallback); aspect-ratio: auto; }
+.lp-card .lp-photo { display: block; width: 100%; margin-top: auto; }
+@media (max-aspect-ratio: 8/5) {
+  /* text and photo together, centred in the panel */
+  .lp-feature, .lp-closing { flex-direction: column; align-items: stretch; justify-content: center; background: var(--fallback); }
+  .lp-feature::before, .lp-closing::before {
+    content: ''; position: absolute; inset: -60px; z-index: -1; pointer-events: none;
+    background: var(--photo, none) center / cover no-repeat; filter: blur(32px) brightness(0.88);
+  }
+  .lp-feature-text { padding: 84px 0 12px; }
+  .lp-feature .lp-photo, .lp-closing .lp-photo { display: block; width: min(100%, 112svh); margin-bottom: clamp(16px, 5vh, 56px); }
+  /* the closing picture's glowing register sits two-thirds across the wide photo: a square cut around it puts it in the
+     middle of the screen, with its branches around it (86% places the photo's point at 68% across in the box's centre) */
+  .lp-closing .lp-photo { aspect-ratio: 1 / 1; width: min(80%, 52svh); background-size: cover; background-position: 86% 50%; }
+}
+/* ---------- large screens ---------- */
+@media (min-width: 1600px) {
+  .lp-body { font-size: 1rem; }
+  .lp-feature p, .lp-closing p { font-size: 1rem; }
+  .lp-feature-text { max-width: 34rem; }
+  .lp-card h3 { font-size: 1.7rem; }
+  .lp-card p { font-size: 0.92rem; }
+  .lp-card-text { padding: 36px; max-width: 30rem; }
+}
+
+/* ---------- tablets ---------- */
+@media (max-width: 1100px) {
+  /* the level cards keep two columns but grow with their text instead of a fixed shape */
+  .lp-card { aspect-ratio: auto; min-height: 320px; }
+}
+@media (max-width: 900px) {
+  .lp-nav { grid-template-columns: 1fr auto; padding-top: 18px; padding-bottom: 18px; }
+  .lp-menu-btn { display: inline-grid; }
+  /* the links become a drop-down panel under the bar */
+  .lp-links {
+    display: none; position: absolute; top: calc(100% - 6px); left: var(--lp-gutter); right: var(--lp-gutter);
+    flex-direction: column; gap: 10px; padding: 12px; border-radius: 20px;
+    background: rgba(15, 21, 19, 0.97); box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+    max-height: calc(100svh - 90px); overflow-y: auto;
+  }
+  .lp-nav.is-open .lp-links { display: flex; }
+  .lp-links-list { flex-direction: column; gap: 2px; }
+  .lp-links a { padding: 13px 16px; font-size: 0.78rem; border-radius: 14px; }
+  .lp-about { grid-template-columns: 1fr; }
+  .lp-about-photo { width: 100%; max-width: 560px; justify-self: center; }
+  .lp-hero-text { left: var(--lp-gutter); }
+  .lp-feature-text { margin-right: var(--lp-gutter); }
+}
+@media (max-width: 760px) {
+  .lp-cards { grid-template-columns: 1fr; }
+  .lp-card { min-height: 260px; }
+}
+
+/* ---------- phones ---------- */
 @media (max-width: 600px) {
   .lp { --lp-radius: 20px; }
+  .lp-nav { gap: 10px; }
   .lp-edge { display: none; }
-  .lp-lang { display: none; }
+  .lp .lp-lang-bar { display: none; }
+  .lp-lang-menu { display: flex !important; padding: 4px 4px 2px; }
+  .lp-lang-menu select { width: 100%; padding-top: 11px; padding-bottom: 11px; font-size: 0.85rem; }
   .lp-logo { font-size: 0.9rem; letter-spacing: 0.22em; }
-  .lp-feature-text { margin-right: var(--lp-gutter); }
-  .lp-card { aspect-ratio: auto; min-height: 260px; }
+  .lp-logo b { letter-spacing: 0.22em; }
+  .lp-card-text { padding: 22px; }
+  .lp-levels-head { flex-direction: column; align-items: flex-start; }
+  .lp-footer { flex-direction: column; padding-top: 36px; padding-bottom: 36px; }
+}
+@media (max-width: 360px) {
+  .lp-logo { font-size: 0.8rem; letter-spacing: 0.16em; }
+  .lp-logo b { letter-spacing: 0.16em; }
+  .lp-nav .lp-pill { padding: 0.62em 0.9em; }
+}
+/* phones held sideways: little height, so the hero headline sits higher and the panels need less top space */
+@media (max-height: 500px) and (orientation: landscape) {
+  .lp-hero-text { bottom: 28px; }
+  .lp-hero h1 { font-size: clamp(1.8rem, 4vw, 2.6rem); }
+  .lp-begin { margin-top: 16px; }
+  .lp-feature-text { padding-top: 84px; padding-bottom: 48px; }
+  .lp-about, .lp-levels { padding-top: 56px; padding-bottom: 56px; }
 }
 
 /* photo panels: the photo is shown clear, with no tint over it (the text block carries its own soft shadow) */

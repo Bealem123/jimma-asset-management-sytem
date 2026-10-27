@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
+import { BCRYPT_ROUNDS, LOCK_MINUTES, MAX_FAILED_LOGINS } from '../lib/security.js';
 import { z } from 'zod';
 import { db } from '../db.js';
 import { signToken, authenticate, hydrateUser } from '../middleware/auth.js';
@@ -8,12 +9,17 @@ import { logAudit } from '../lib/audit.js';
 import { ROLE_LABELS } from '../lib/constants.js';
 import { photoUpload, photoVersion, removePhoto, savePhoto, sendPhoto } from '../lib/photos.js';
 
+import { passwordSchema } from '../lib/schemas.js';
+
 const router = Router();
 
-// Simple in-memory brute-force protection: 8 failed attempts per username+IP per 15 minutes.
+// Brute force: MAX_FAILED_LOGINS wrong passwords in a row lock the account for LOCK_MINUTES, from wherever they come
+// (kept with the account), and the same count per name and address locks names that do not exist too, so the answer
+// never tells whether an account exists.
 const failures = new Map();
-const WINDOW_MS = 15 * 60 * 1000;
-const MAX_FAILURES = 8;
+const WINDOW_MS = LOCK_MINUTES * 60 * 1000;
+const MAX_FAILURES = MAX_FAILED_LOGINS;
+const LOCKED = `Too many failed attempts. Try again in ${LOCK_MINUTES} minutes.`;
 function throttled(key) {
   const rec = failures.get(key);
   if (!rec) return false;
@@ -42,17 +48,31 @@ export const publicUser = (u) => ({
 });
 
 router.post('/login', async (req, res) => {
-  const { username, password } = parse(z.object({ username: z.string().min(1), password: z.string().min(1) }), req.body);
+  const { username, password } = parse(z.object({ username: z.string().trim().min(1).max(80), password: z.string().min(1).max(200) }), req.body);
   const key = `${username.toLowerCase()}|${req.ip}`;
-  if (throttled(key)) throw new HttpError(429, 'Too many failed attempts. Try again in a few minutes.');
+  if (throttled(key)) throw new HttpError(429, LOCKED);
 
   const user = await db('users').whereRaw('LOWER(username) = ?', [username.toLowerCase()]).first();
+  if (user?.locked_until && new Date(user.locked_until) > new Date()) {
+    recordFailure(key);
+    await logAudit(null, user, { action: 'LOGIN_FAILED', entity: 'user', entityId: user.id, summary: `Sign-in refused for "${username}": the account is locked after repeated wrong passwords` });
+    throw new HttpError(429, LOCKED);
+  }
   // compare even when the user is missing so response time does not reveal valid usernames
   const hash = user?.password_hash || '$2a$10$invalidinvalidinvalidinvalidinvalidinvalidinvalidinvalidin';
   const ok = await bcrypt.compare(password, hash);
   if (!user || !ok) {
     recordFailure(key);
     await logAudit(null, user || null, { action: 'LOGIN_FAILED', entity: 'user', entityId: user?.id ?? null, summary: `Failed sign-in for "${username}"` });
+    if (user) {
+      const failed = (user.failed_logins || 0) + 1;
+      const lock = failed >= MAX_FAILED_LOGINS;
+      await db('users').where({ id: user.id }).update({ failed_logins: lock ? 0 : failed, locked_until: lock ? new Date(Date.now() + WINDOW_MS) : null });
+      if (lock) {
+        await logAudit(null, user, { action: 'ACCOUNT_LOCKED', entity: 'user', entityId: user.id, summary: `${user.username} locked for ${LOCK_MINUTES} minutes after ${MAX_FAILED_LOGINS} wrong passwords` });
+        throw new HttpError(429, LOCKED);
+      }
+    }
     throw new HttpError(401, 'Wrong username or password.');
   }
   // the right password for a switched-off account: say so (only someone who knows the password learns it)
@@ -60,8 +80,14 @@ router.post('/login', async (req, res) => {
     await logAudit(null, user, { action: 'LOGIN_FAILED', entity: 'user', entityId: user.id, summary: `Sign-in refused for "${username}": the account is deactivated` });
     throw new HttpError(403, 'This account has been deactivated. Ask your administrator to activate it.');
   }
+  // a temporary password nobody replaced in time no longer opens the account
+  if (user.must_change_password && user.temp_password_expires_at && new Date(user.temp_password_expires_at) < new Date()) {
+    await logAudit(null, user, { action: 'LOGIN_FAILED', entity: 'user', entityId: user.id, summary: `Sign-in refused for "${username}": the temporary password has expired` });
+    throw new HttpError(403, 'Your temporary password has expired. Ask your administrator for a new one.');
+  }
   failures.delete(key);
-  await db('users').where({ id: user.id }).update({ last_login_at: db.fn.now() });
+  const now = new Date();
+  await db('users').where({ id: user.id }).update({ last_login_at: now, last_seen_at: now, failed_logins: 0, locked_until: null });
   await logAudit(null, user, { action: 'LOGIN', entity: 'user', entityId: user.id, summary: `${user.username} signed in` });
 
   await hydrateUser(user);
@@ -76,15 +102,22 @@ router.post('/language', authenticate, async (req, res) => {
 
 router.get('/me', authenticate, (req, res) => res.json({ user: publicUser(req.user) }));
 
+// Signing out ends the session on the server too: the token (and any copy of it) stops working at once.
+router.post('/logout', authenticate, async (req, res) => {
+  await db('users').where({ id: req.user.id }).update({ token_version: db.raw('token_version + 1') });
+  await logAudit(null, req.user, { action: 'LOGOUT', entity: 'user', entityId: req.user.id, summary: `${req.user.username} signed out` });
+  res.json({ ok: true });
+});
+
 router.post('/change-password', authenticate, async (req, res) => {
   const { current_password, new_password } = parse(
-    z.object({ current_password: z.string().min(1), new_password: z.string().min(10, 'Use at least 10 characters.').max(100) }),
+    z.object({ current_password: z.string().min(1, 'Current password is required.'), new_password: passwordSchema }),
     req.body,
   );
   const row = await db('users').where({ id: req.user.id }).first();
   if (!(await bcrypt.compare(current_password, row.password_hash))) throw new HttpError(400, 'Current password is wrong.', { current_password: 'Wrong password.' });
   // a new password ends every other open session of this user; this browser gets a fresh token
-  await db('users').where({ id: req.user.id }).update({ password_hash: await bcrypt.hash(new_password, 10), token_version: db.raw('token_version + 1'), must_change_password: false });
+  await db('users').where({ id: req.user.id }).update({ password_hash: await bcrypt.hash(new_password, BCRYPT_ROUNDS), token_version: db.raw('token_version + 1'), must_change_password: false, temp_password_expires_at: null });
   await logAudit(null, req.user, { action: 'PASSWORD_CHANGE', entity: 'user', entityId: req.user.id, summary: `${req.user.username} changed their password` });
   const fresh = await db('users').where({ id: req.user.id }).first();
   res.json({ ok: true, token: signToken(fresh) });

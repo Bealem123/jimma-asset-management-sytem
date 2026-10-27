@@ -1,0 +1,600 @@
+/* Split-screen sign-in design inspired by modern luxury aesthetic,
+   adapted to Jimma City's signature deep teal theme. */
+
+.destiny-login-viewport {
+  width: 100vw;
+  min-height: 100vh;
+  min-height: 100dvh;
+  height: 100vh;
+  height: 100dvh;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  padding: 0;
+  margin: 0;
+  background: #ffffff;
+  box-sizing: border-box;
+  font-family: 'Plus Jakarta Sans Variable', 'Montserrat Variable', system-ui, -apple-system, sans-serif;
+  color: #10201e;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Ambient faceted background pattern (disabled for full-screen edge-to-edge layout) */
+.destiny-login-viewport::before {
+  display: none;
+}
+
+/* Main Split Frame - full screen edge-to-edge */
+.destiny-login-frame {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
+  height: 100vh;
+  height: 100dvh;
+  border-radius: 0;
+  overflow: hidden;
+  display: flex;
+  box-shadow: none;
+  background: #ffffff;
+  z-index: 2;
+}
+
+/* ================= LEFT PANEL (Theme Teal with Landscape Overlay) ================= */
+.destiny-panel-left {
+  flex: 0 0 50%;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: clamp(32px, 4.5vw, 52px);
+  background:
+    linear-gradient(145deg, rgba(16, 122, 112, 0.93) 0%, rgba(14, 90, 83, 0.95) 45%, rgba(10, 48, 44, 0.98) 100%),
+    url('/login-bg.jpg') center / cover no-repeat;
+  color: #ffffff;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+/* Subtle texture glow on top-left */
+.destiny-panel-left::after {
+  content: '';
+  position: absolute;
+  top: -100px;
+  left: -100px;
+  width: 320px;
+  height: 320px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(95, 212, 194, 0.2) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+.destiny-left-top {
+  position: relative;
+  z-index: 2;
+}
+
+.destiny-brand-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  text-decoration: none;
+  color: #ffffff;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.destiny-brand-link:hover {
+  opacity: 0.95;
+  transform: translateY(-1px);
+}
+
+.destiny-brand-mark {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  object-fit: contain;
+  background: rgba(255, 255, 255, 0.15);
+  padding: 3px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.destiny-brand-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.destiny-brand-title {
+  font-family: 'Playfair Display', Georgia, serif;
+  font-size: 1.45rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.1;
+  color: #ffffff;
+}
+
+.destiny-brand-subtitle {
+  font-size: 0.72rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.82);
+  margin-top: 3px;
+  font-weight: 500;
+}
+
+.destiny-left-center {
+  position: relative;
+  z-index: 2;
+  max-width: 400px;
+  margin: auto 0;
+  padding: 24px 0;
+}
+
+.destiny-headline {
+  font-size: clamp(2.1rem, 3.2vw, 2.75rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.18;
+  color: #ffffff;
+  margin: 0 0 12px;
+  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.18);
+}
+
+.destiny-subhead {
+  font-size: 0.98rem;
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.84);
+  margin: 0;
+  max-width: 320px;
+}
+
+.destiny-left-bottom {
+  position: relative;
+  z-index: 2;
+}
+
+.destiny-home-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #ffffff;
+  text-decoration: none;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  opacity: 0.88;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.destiny-home-link:hover {
+  opacity: 1;
+  transform: translateX(-3px);
+}
+
+/* ================= RIGHT PANEL (Clean White with Concentric Rings) ================= */
+.destiny-panel-right {
+  flex: 0 0 50%;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: clamp(32px, 4.5vw, 52px);
+  background: #ffffff;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.destiny-right-top {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  position: relative;
+  z-index: 5;
+}
+
+.destiny-lang-switcher {
+  display: inline-flex;
+  align-items: center;
+  position: relative;
+  cursor: pointer;
+}
+
+.destiny-lang-switcher select {
+  appearance: none;
+  -webkit-appearance: none;
+  background: #f4f7f6;
+  border: 1px solid #d8e2df;
+  border-radius: 999px;
+  padding: 7px 16px 7px 34px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #10201e;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  outline: none;
+}
+
+.destiny-lang-switcher select:hover {
+  border-color: #0e5a53;
+  background: #ffffff;
+  box-shadow: 0 2px 8px rgba(14, 90, 83, 0.08);
+}
+
+.destiny-lang-switcher select:focus-visible {
+  border-color: #0e5a53;
+  box-shadow: 0 0 0 3px rgba(14, 90, 83, 0.15);
+}
+
+.destiny-lang-switcher .nav-icon {
+  position: absolute;
+  left: 11px;
+  color: #0e5a53;
+  pointer-events: none;
+  width: 15px;
+  height: 15px;
+}
+
+.destiny-right-bottom {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  position: relative;
+  z-index: 5;
+}
+
+.destiny-copyright {
+  font-size: 0.76rem;
+  color: #8fa09d;
+  letter-spacing: 0.02em;
+}
+
+/* Concentric Orbital Rings Motif */
+.destiny-rings-wrap {
+  position: absolute;
+  right: -8%;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 480px;
+  height: 480px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.destiny-rings-svg {
+  width: 100%;
+  height: 100%;
+}
+
+/* ================= CENTER FLOATING CARD ================= */
+.destiny-center-card {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: clamp(320px, 33vw, 410px);
+  background: #ffffff;
+  border-radius: 24px;
+  padding: clamp(34px, 4vh, 46px) clamp(28px, 3.2vw, 40px) clamp(30px, 3.5vh, 40px);
+  box-shadow:
+    0 24px 60px -15px rgba(10, 30, 26, 0.18),
+    0 8px 24px -6px rgba(10, 30, 26, 0.08),
+    0 0 0 1px rgba(0, 0, 0, 0.04);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+.destiny-card-header {
+  text-align: center;
+  margin-bottom: 24px;
+}
+
+.destiny-card-title {
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: #20302d;
+  text-transform: uppercase;
+  margin: 0 0 8px;
+}
+
+.destiny-title-pill {
+  width: 32px;
+  height: 3.5px;
+  border-radius: 999px;
+  background: #0e5a53;
+  margin: 0 auto;
+}
+
+/* Alert inside Card */
+.destiny-alert {
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.destiny-alert-error {
+  background: #fde8e8;
+  color: #9b1c1c;
+  border: 1px solid #f8b4b4;
+}
+
+.destiny-alert-info {
+  background: #e8f4f3;
+  color: #0b4f49;
+  border: 1px solid #bce1dc;
+}
+
+/* Form & Clean Underline Inputs */
+.destiny-form {
+  display: flex;
+  flex-direction: column;
+}
+
+.destiny-input-group {
+  position: relative;
+  margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+}
+
+.destiny-input {
+  width: 100%;
+  border: none;
+  border-bottom: 1.5px solid #d8e2df;
+  border-radius: 0;
+  padding: 12px 38px 12px 4px;
+  font-size: 0.98rem;
+  font-family: inherit;
+  color: #10201e;
+  background: transparent;
+  outline: none;
+  transition: border-color 0.22s ease, box-shadow 0.22s ease;
+  box-sizing: border-box;
+}
+
+.destiny-input::placeholder {
+  color: #8fa09d;
+  font-weight: 400;
+  letter-spacing: 0.01em;
+}
+
+.destiny-input:focus {
+  border-bottom-color: #0e5a53;
+  box-shadow: 0 1px 0 0 #0e5a53;
+}
+
+.destiny-input:-webkit-autofill {
+  -webkit-text-fill-color: #10201e;
+  box-shadow: 0 0 0 1000px #ffffff inset;
+  caret-color: #10201e;
+}
+
+.destiny-input-icon {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #8fa09d;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.2s ease;
+}
+
+.destiny-input:focus ~ .destiny-input-icon,
+.destiny-input-group:focus-within .destiny-input-icon {
+  color: #0e5a53;
+}
+
+.destiny-icon-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+}
+
+.destiny-icon-btn:hover {
+  color: #0e5a53;
+}
+
+.destiny-icon-btn:focus-visible {
+  outline: 2px solid #0e5a53;
+  outline-offset: 2px;
+}
+
+/* Submit Pill Button */
+.destiny-submit-btn {
+  width: 100%;
+  padding: 13.5px 28px;
+  border-radius: 999px;
+  border: none;
+  background: linear-gradient(135deg, #10877c 0%, #0e5a53 100%);
+  color: #ffffff;
+  font-size: 1.02rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  box-shadow: 0 12px 24px -6px rgba(14, 90, 83, 0.42);
+  transition: all 0.22s ease;
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.destiny-submit-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #149c90 0%, #0b685f 100%);
+  box-shadow: 0 16px 28px -6px rgba(14, 90, 83, 0.54);
+  transform: translateY(-1.5px);
+}
+
+.destiny-submit-btn:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 8px 16px -4px rgba(14, 90, 83, 0.38);
+}
+
+.destiny-submit-btn:focus-visible {
+  outline: 2px solid #0e5a53;
+  outline-offset: 3px;
+}
+
+.destiny-submit-btn:disabled {
+  opacity: 0.68;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.destiny-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: destiny-spin 0.8s linear infinite;
+}
+
+@keyframes destiny-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Card Footer */
+.destiny-card-footer {
+  text-align: center;
+  margin-top: 22px;
+  font-size: 0.82rem;
+  color: #6f7f7c;
+  line-height: 1.45;
+}
+
+.destiny-footer-muted {
+  color: #6f7f7c;
+}
+
+.destiny-footer-highlight {
+  color: #0e5a53;
+  font-weight: 600;
+}
+
+/* ================= RESPONSIVE LAYOUT ================= */
+@media (max-width: 960px) {
+  .destiny-login-viewport {
+    padding: 0;
+    align-items: stretch;
+    background: #f0f4f3;
+    overflow-y: auto;
+    height: auto;
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+
+  .destiny-login-frame {
+    flex-direction: column;
+    min-height: 100vh;
+    min-height: 100dvh;
+    height: auto;
+    border-radius: 0;
+    max-width: 100%;
+    box-shadow: none;
+    overflow: visible;
+  }
+
+  .destiny-panel-left {
+    order: 1;
+    flex: none;
+    min-height: 240px;
+    padding: 24px 20px 68px;
+  }
+
+  .destiny-left-center {
+    padding: 18px 0 0;
+  }
+
+  .destiny-headline {
+    font-size: 1.85rem;
+  }
+
+  .destiny-center-card {
+    order: 2;
+    position: relative;
+    left: auto;
+    top: auto;
+    transform: none;
+    margin: -48px auto 20px;
+    width: calc(100% - 32px);
+    max-width: 420px;
+    padding: 32px 24px 28px;
+    box-shadow: 0 16px 36px -10px rgba(10, 30, 26, 0.16);
+    z-index: 10;
+  }
+
+  .destiny-panel-right {
+    order: 3;
+    flex: 1;
+    min-height: auto;
+    padding: 0 20px 24px;
+    background: transparent;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+  }
+
+  .destiny-right-top {
+    position: fixed;
+    top: 18px;
+    right: 18px;
+    z-index: 30;
+  }
+
+  .destiny-right-bottom {
+    justify-content: center;
+    margin-top: 8px;
+  }
+
+  .destiny-rings-wrap {
+    display: none;
+  }
+}
+
+/* phones: a smaller, lighter card that leaves room around it instead of filling the screen */
+@media (max-width: 600px) {
+  .destiny-panel-left { min-height: 190px; padding: 18px 18px 56px; }
+  .destiny-brand-title { font-size: 1.05rem; }
+  .destiny-brand-subtitle { font-size: 0.6rem; }
+  .destiny-left-center { padding-top: 12px; }
+  .destiny-headline { font-size: 1.4rem; margin-bottom: 4px; }
+  .destiny-subhead { font-size: 0.8rem; line-height: 1.45; }
+  .destiny-home-link { font-size: 0.7rem; }
+
+  .destiny-right-top { top: 14px; right: 12px; }
+  .destiny-lang-switcher select { font-size: 0.78rem; padding-top: 6px; padding-bottom: 6px; }
+
+  .destiny-center-card {
+    width: calc(100% - 56px);
+    max-width: 330px;
+    margin-top: -40px;
+    padding: 22px 20px 18px;
+    border-radius: 18px;
+  }
+  .destiny-card-header { margin-bottom: 14px; }
+  .destiny-card-title { font-size: 0.92rem; margin-bottom: 6px; }
+  .destiny-title-pill { width: 26px; height: 3px; }
+  .destiny-alert { font-size: 0.78rem; padding: 8px 10px; margin-bottom: 12px; }
+  .destiny-input-group { margin-bottom: 14px; }
+  .destiny-input { font-size: 0.9rem; padding: 9px 34px 9px 2px; }
+  .destiny-input-icon .nav-icon, .destiny-input-icon svg { width: 16px; height: 16px; }
+  .destiny-submit-btn { font-size: 0.92rem; padding: 10px 22px; margin-top: 6px; box-shadow: 0 8px 18px -6px rgba(14, 90, 83, 0.4); }
+  .destiny-card-footer { margin-top: 14px; font-size: 0.74rem; }
+  .destiny-copyright { font-size: 0.7rem; }
+}

@@ -4,7 +4,7 @@ import { api, ApiError } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { etb, label, num } from '../format.js';
 import {
-  Alert, Field, Loading, PageHeader, SpecForm, Table, useAsync,
+  Alert, Field, FilterBar, FilterSearch, FilterSelect, Loading, PageHeader, SpecForm, Table, enumOpt, useAsync, useFilters,
 } from '../components/ui.jsx';
 import { bothDates, periodName, periodSpan } from '../ethiopian.js';
 import { t, getLanguage } from '../i18n.jsx';
@@ -29,6 +29,11 @@ function Status({ item }) {
     </>
   );
 }
+
+// one filter for both lists: the statuses a report can be in, with "late" across them
+const STATUS_FILTER = [['', 'Any status'], ['unsent', 'Not sent yet'], ['late', 'Late'], ['SUBMITTED', 'Sent, waiting for a decision'], ['RETURNED', 'Returned for correction'], ['ACCEPTED', 'Accepted']];
+const statusOptions = STATUS_FILTER.map(([value, text]) => ({ value, label: text }));
+const matchesStatus = (x, s) => !s || (s === 'unsent' ? !x.status : s === 'late' ? Boolean(x.late) : x.status === s);
 
 const Month = ({ p }) => <><strong>{periodName(p)}</strong>{periodSpan(p) && <div className="muted small">{periodSpan(p)}</div>}</>;
 
@@ -83,6 +88,12 @@ export function MonthlyReportPage() {
     <>
       <PageHeader title={`${r.reporter.full_name} · ${periodName(r.period)}`}><BackToList /></PageHeader>
       <Alert kind="success">{done}</Alert>
+      {r.can_resend && (
+        <Alert kind="warn">
+          {t('Returned for correction:')} “{r.decision_note}”{' '}
+          <Link className="btn btn-small btn-primary" to={`/monthly-reports/prepare/${r.period.key}`}>{t('Correct and send again')}</Link>
+        </Alert>
+      )}
       <section className="card">
         <dl className="role-list">
           <div><dt>{t('From')}</dt><dd>{r.reporter.full_name} ({label(r.reporter.role)}) · {areaLabel(r.area)}</dd></div>
@@ -142,7 +153,7 @@ export function PrepareReportPage() {
           submitLabel="Confirm and send"
           initial={{ comment: item.report?.comment || '', confirm: false }}
           fields={[
-            { name: 'comment', label: 'Your comments', type: 'textarea', rows: 5, wide: true, help: 'If some reports from your team are missing, explain why here.' },
+            { name: 'comment', label: 'Your comments', type: 'textarea', rows: 5, wide: true, maxLength: 4000, help: 'If some reports from your team are missing, explain why here.' },
             { name: 'confirm', type: 'checkbox', label: 'Confirmation', checkLabel: 'I confirm that these figures and my comments are correct.', wide: true },
           ]}
           onCancel={() => navigate('/monthly-reports')}
@@ -158,6 +169,8 @@ export function PrepareReportPage() {
 }
 
 function MyReports({ data }) {
+  const [f, setF, clear, any] = useFilters(['my_status']);
+  const periods = data.periods.filter((item) => matchesStatus(item, f.my_status));
   return (
     <section className="card">
       <div className="card-head">
@@ -168,8 +181,11 @@ function MyReports({ data }) {
           ? t('Sent to {names} ({role}), due {n} days after the month ends.', { names: data.reviewers.map((r) => r.full_name).join(', '), role: label(data.sends_to), n: data.deadline_days })
           : t('Nobody receives your report yet: the {role} of your area has no active account.', { role: label(data.sends_to) })}
       </p>
-      <Table head={['Month', 'Deadline', 'Status', 'Sent', '']}>
-        {data.periods.map((item) => (
+      <FilterBar any={any} onClear={clear}>
+        <FilterSelect id="my-sta" text="Status" value={f.my_status} onChange={(v) => setF('my_status', v)} options={statusOptions} />
+      </FilterBar>
+      <Table head={['Month', 'Deadline', 'Status', 'Sent', '']} empty={periods.length === 0 && 'Nothing matches these filters.'}>
+        {periods.map((item) => (
           <tr key={item.period.key}>
             <td><Month p={item.period} /></td>
             <td className="small">{bothDates(item.deadline)}</td>
@@ -192,10 +208,15 @@ function MyReports({ data }) {
 
 function TeamReports({ period, onPeriod }) {
   const { data, error, loading } = useAsync(() => api.get(`/monthly-reports/team${period ? `?period=${period}` : ''}`), [period]);
+  const [f, setF, clear, any] = useFilters(['q', 'role', 'status']);
   if (loading && !data) return <Loading />;
   if (error) return <Alert>{error}</Alert>;
   const m = data.members;
-  const count = (fn) => m.filter(fn).length;
+  const count = (fn) => m.filter(fn).length; // the totals are of everyone, whatever the filters
+  const needle = f.q.trim().toLowerCase();
+  const shown = m.filter((x) => (!f.role || x.user.role === f.role) && matchesStatus(x, f.status)
+    && (!needle || [x.user.full_name, x.user.username, areaLabel(x.area)].some((s) => String(s).toLowerCase().includes(needle))));
+  const roles = [...new Set(m.map((x) => x.user.role))];
   return (
     <section className="card">
       <div className="card-head">
@@ -216,8 +237,16 @@ function TeamReports({ period, onPeriod }) {
         {' · '}{t('{n} accepted', { n: count((x) => x.status === 'ACCEPTED') })}
         {' · '}<span className={count((x) => x.late) ? 'text-bad' : undefined}>{t('{n} late', { n: count((x) => x.late) })}</span>
       </p>
-      <Table head={['Name', 'Role', 'Area', 'Status', 'Deadline', 'Sent', '']} empty={m.length === 0 && 'Nobody sends you a monthly report yet.'}>
-        {m.map((x) => (
+      {m.length > 0 && (
+        <FilterBar any={any} onClear={clear}>
+          <FilterSearch id="tr-q" value={f.q} onChange={(v) => setF('q', v)} placeholder="Name, username or area" />
+          {roles.length > 1 && <FilterSelect id="tr-role" text="Role" value={f.role} onChange={(v) => setF('role', v)} options={enumOpt(roles, { blank: 'All roles' })} />}
+          <FilterSelect id="tr-sta" text="Status" value={f.status} onChange={(v) => setF('status', v)} options={statusOptions} />
+        </FilterBar>
+      )}
+      <Table head={['Name', 'Role', 'Area', 'Status', 'Deadline', 'Sent', '']}
+        empty={shown.length === 0 && (m.length === 0 ? 'Nobody sends you a monthly report yet.' : 'Nothing matches these filters.')}>
+        {shown.map((x) => (
           <tr key={x.user.id}>
             <td>{x.user.full_name}<div className="muted small">{x.user.username}</div></td>
             <td>{label(x.user.role)}</td>
@@ -264,7 +293,12 @@ export default function MonthlyReports() {
         {' '}{t('Today: {date}', { date: bothDates(data.today) })}
       </p>
       {data.sends && <MyReports data={data} />}
-      {data.receives && <TeamReports period={search.get('period')} onPeriod={(key) => setSearch({ period: key }, { replace: true })} />}
+      {data.receives && (
+        <TeamReports
+          period={search.get('period')}
+          onPeriod={(key) => { const next = new URLSearchParams(search); next.set('period', key); setSearch(next, { replace: true }); }}
+        />
+      )}
     </>
   );
 }

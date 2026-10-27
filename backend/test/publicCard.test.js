@@ -60,4 +60,30 @@ describe('the public card a printed QR code opens', () => {
     // a label printed earlier, with the plain Asset ID, still works
     await api('post', '/api/assets/scan', fx.users.kebeleA).send({ code: asset.asset_code }).expect(200);
   });
+
+  it('a lost or stolen label is replaced: the old one stops working and says so', async () => {
+    const replace = (user, body) => api('post', `/api/assets/${asset.id}/label/replace`, user).send(body);
+    await replace(fx.users.jirenAdmin, { reason: 'LOST' }).expect(403); // the approver does not keep the records
+    await replace(fx.users.officer, { reason: 'MISPLACED' }).expect(400);
+    await replace(fx.users.officer, { reason: 'OTHER' }).expect(400); // "other" needs an explanation
+    await replace(fx.users.officer, { reason: 'STOLEN', note: 'Taken from the shop door' }).expect(200);
+    const fresh = (await db('assets').where({ id: asset.id }).first()).public_token;
+    assert.match(fresh, /^[A-Za-z0-9_-]{16}$/);
+    assert.notEqual(fresh, token);
+    // the old label: cancelled on a phone, refused by the scanner, no photos
+    const gone = await api('get', `/api/public/assets/${token}`).expect(410);
+    assert.match(gone.body.error, /cancelled/);
+    await api('post', '/api/assets/scan', fx.users.kebeleA).send({ code: `https://assets.example/a/${token}` }).expect(410);
+    const card = (await api('get', `/api/public/assets/${fresh}`).expect(200)).body;
+    await api('get', `/api/public/assets/${token}/photos/${card.photos[0].id}`).expect(404);
+    // the new label opens the asset
+    const res = await api('post', '/api/assets/scan', fx.users.kebeleA).send({ code: `https://assets.example/a/${fresh}` }).expect(200);
+    assert.equal(res.body.id, asset.id);
+    // and the record says who replaced it and why
+    const log = await db('audit_logs').where({ asset_id: asset.id, action: 'LABEL_REPLACE' }).first();
+    assert.match(log.summary, /stolen: Taken from the shop door/);
+    assert.equal(log.user_id, fx.users.officer.id);
+    const retired = await db('asset_retired_labels').where({ asset_id: asset.id }).first();
+    assert.deepEqual([retired.token, retired.reason], [token, 'STOLEN']);
+  });
 });

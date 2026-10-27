@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api.js';
+import { useAuth } from '../auth.jsx';
 import { useLookups } from '../lookups.jsx';
 import { date, dateTime, label } from '../format.js';
 import { Alert, Badge, Loading, PageHeader, Tabs } from '../components/ui.jsx';
 import { t } from '../i18n.jsx';
+import NavIcon from '../components/NavIcon.jsx';
 
 // The full history of one user account: sign-ins (and failed ones), password changes, and every change an
 // administrator made to it. The server only returns accounts this user may see.
@@ -92,6 +94,7 @@ function Details({ h, lk }) {
 
 export default function UserHistory() {
   const { id } = useParams();
+  const { user: me } = useAuth();
   const lk = useLookups();
   const [user, setUser] = useState(null);
   const [rows, setRows] = useState([]);
@@ -119,7 +122,7 @@ export default function UserHistory() {
     setBusy(false);
   }
 
-  if (error) return <><BackLink /><Alert>{error}</Alert></>;
+  if (error) return <><BackLink me={me} /><Alert>{error}</Alert></>;
   if (!user) return <Loading />;
 
   const shown = rows.filter((r) => filter === 'all' || kindOf(actionOf(r)).group === filter);
@@ -131,8 +134,19 @@ export default function UserHistory() {
 
   return (
     <>
-      <BackLink />
-      <PageHeader title={user.full_name} subtitle={`${user.username} · ${label(user.role)}`} />
+      <BackLink me={me} />
+      <PageHeader title={user.full_name} subtitle={`${user.username} · ${label(user.role)}`}>
+        {!user.read_only && (
+          <div className="actions">
+            <Link to={`/users/${user.id}/edit`} className="btn btn-small">
+              <span className="btn-icon-nav"><NavIcon name="edit" /> {t('Edit user')}</span>
+            </Link>
+            <Link to="/users" className="btn btn-small">
+              {t(me?.role === 'KEBELE_ADMIN' ? 'Back to Sector Administrators' : 'Back to users')}
+            </Link>
+          </div>
+        )}
+      </PageHeader>
 
       <section className="card">
         <h2>{t('Account')}</h2>
@@ -178,6 +192,12 @@ export default function UserHistory() {
   );
 }
 
-function BackLink() {
-  return <p style={{ margin: '0 0 12px' }}><Link to="/users">← {t('Back to users')}</Link></p>;
+function BackLink({ me }) {
+  return (
+    <p style={{ margin: '0 0 12px' }}>
+      <Link to="/users" className="btn-icon-nav">
+        <NavIcon name="chevronLeft" /> {t(me?.role === 'KEBELE_ADMIN' ? 'Back to Sector Administrators' : 'Back to users')}
+      </Link>
+    </p>
+  );
 }

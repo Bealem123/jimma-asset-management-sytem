@@ -18,7 +18,7 @@ import {
   ROLES, STATUSES, USE_TYPES,
 } from '../lib/constants.js';
 import {
-  bool, dateStr, lat, lng, money, oneOf, optDate, optIdRef, optStr, present, reqMoney, reqStr,
+  bool, dateStr, lat, lng, money, oneOf, optDate, optIdRef, optNameText, optPastDate, optStr, pastDate, present, reqNameText, reqPersonName, reqStr,
 } from '../lib/schemas.js';
 import {
   assetCode, fail, getVisibleAsset, guardAsset, resolveRefs,
@@ -29,6 +29,9 @@ import { notifyAsset, notifyUser } from '../lib/notify.js';
 import { depreciation } from '../lib/depreciation.js';
 import { evidenceSchema, isOwnLabel, placeCheck } from '../lib/siteCheck.js';
 import { MONEY_DETAIL_KEYS, cleanDetails } from '../lib/sectorFields.js';
+import { notAfterToday } from '../lib/calendar.js';
+import { assertFileContent } from '../lib/security.js';
+import { recordValuation, valuationSchema } from '../lib/money.js';
 
 const router = Router();
 router.use(authenticate);
@@ -39,7 +42,7 @@ const asset_ = (user) => (row) => maskFinancial(user, normalizeAsset(row));
 const createSchema = assetSchema.extend({
   status: oneOf(['PLANNED', 'REGISTERED'], 'Initial status').default('REGISTERED'),
   current_valuation: money,
-  valuation_date: optDate,
+  valuation_date: optPastDate,
   acquisition: acquisitionSchema.nullish(),
   submit: bool.default(false), // enter the approval workflow straight away
 });
@@ -79,13 +82,14 @@ export const listSchema = z.object({
   ownership_type: z.preprocess((v) => v || undefined, oneOf(OWNERSHIP_TYPES).optional()),
   revenue: z.preprocess((v) => v || undefined, z.enum(['yes', 'no']).optional()),
   reservable: z.preprocess((v) => v || undefined, z.enum(['yes']).optional()),
+  maintenance: z.preprocess((v) => v || undefined, z.enum(['due']).optional()),
   serial_number: z.string().trim().max(120).optional(),
   responsible: z.string().trim().max(160).optional(),
   location: z.string().trim().max(160).optional(),
   include_archived: bool.optional(),
   page: z.coerce.number().int().min(1).default(1),
   page_size: z.coerce.number().int().min(1).max(100).default(25),
-  sort: z.enum(['asset_code', 'name', 'status', 'condition', 'created_at', 'updated_at']).default('asset_code'),
+  sort: z.enum(['asset_code', 'name', 'status', 'condition', 'created_at', 'updated_at', 'approval_state_at']).default('asset_code'),
   dir: z.enum(['asc', 'desc']).default('desc'),
 });
 
@@ -94,6 +98,17 @@ const LATEST_SITE_CHECK = [
   latest('distance_m', 'site_distance_m'), latest('far', 'site_far'), latest('qr_scanned', 'site_qr_scanned'),
   latest('found_condition', 'site_found_condition'), latest('location_saved', 'site_location_saved'), latest('created_at', 'site_checked_at'),
 ];
+
+// The only asset record that may be removed outright: a draft its registrar never sent for verification (a mistake
+// or a duplicate nobody else has seen). Every other asset leaves through retirement, disposal and archiving, so the
+// register keeps its history. A rejected registration comes back as a draft but was sent once: it stays.
+const NOT_DELETABLE = 'Only a draft that was never sent for verification can be deleted, and only by the person who registered it. Retire or dispose of other assets instead.';
+async function deletableIds(user, assets) {
+  const drafts = assets.filter((a) => a.approval_state === 'DRAFT' && a.created_by === user.id).map((a) => a.id);
+  if (!drafts.length) return new Set();
+  const sent = new Set(await db('audit_logs').whereIn('asset_id', drafts).where('action', 'SUBMIT').distinct().pluck('asset_id'));
+  return new Set(drafts.filter((id) => !sent.has(id)));
+}
 
 router.get('/', async (req, res) => {
   const f = parse(listSchema, req.query);
@@ -104,7 +119,41 @@ router.get('/', async (req, res) => {
     .limit(f.page_size).offset((f.page - 1) * f.page_size);
   if (f.approval_state) q.select(LATEST_SITE_CHECK); // the approval queues show the evidence from the site
   const rows = await q;
-  res.json({ rows: rows.map(asset_(req.user)), total: Number(n), page: f.page, page_size: f.page_size });
+  const deletable = await deletableIds(req.user, rows);
+  res.json({ rows: rows.map((r) => ({ ...asset_(req.user)(r), can_delete: deletable.has(r.id) })), total: Number(n), page: f.page, page_size: f.page_size });
+});
+
+// What a registration itself creates goes with the draft; any other record (a use, maintenance, a request ...)
+// means the asset has been worked on, and it stays. The audit trail and notifications are kept as they are.
+const DRAFT_PARTS = ['asset_documents', 'asset_valuations', 'asset_acquisitions', 'scan_events'];
+const KEPT_APART = ['audit_logs', 'notifications'];
+
+router.delete('/:id', guardAsset('asset.create'), async (req, res) => {
+  const asset = req.asset;
+  if (!(await deletableIds(req.user, [asset])).has(asset.id)) throw conflict(NOT_DELETABLE);
+  const tables = (await db('information_schema.COLUMNS').whereRaw('TABLE_SCHEMA = DATABASE()').where('COLUMN_NAME', 'asset_id').pluck('TABLE_NAME'))
+    .filter((tbl) => !DRAFT_PARTS.includes(tbl) && !KEPT_APART.includes(tbl));
+  for (const tbl of tables) {
+    if (await db(tbl).where({ asset_id: asset.id }).first()) {
+      throw conflict('This draft already has other records (a use, maintenance, a request ...), so it stays. Correct it, or ask for it to be retired.');
+    }
+  }
+  const files = await db('asset_documents').where({ asset_id: asset.id }).pluck('stored_name');
+  try {
+    await db.transaction(async (trx) => {
+      for (const tbl of DRAFT_PARTS) await trx(tbl).where({ asset_id: asset.id }).delete();
+      await trx('assets').where({ id: asset.id }).delete();
+      await logAudit(trx, req.user, {
+        action: 'DELETE', entity: 'asset', entityId: asset.id, assetId: asset.id,
+        summary: `${asset.asset_code}: draft "${asset.name}" deleted by its registrar before it was sent for verification`,
+      });
+    });
+  } catch (err) {
+    if (err.code === 'ER_ROW_IS_REFERENCED_2' || err.code === 'ER_ROW_IS_REFERENCED') throw conflict(NOT_DELETABLE);
+    throw err;
+  }
+  await Promise.all(files.map((f) => fs.promises.unlink(path.join(config.uploadDir, path.basename(f))).catch(() => {})));
+  res.json({ ok: true });
 });
 
 const EXPORT_COLUMNS = [
@@ -151,6 +200,7 @@ async function registeredBy(user, asset) {
 
 router.post('/', registrationPhoto, async (req, res) => {
   try {
+    await assertFileContent(req.file, 'photo', 'Use a JPG, PNG or WebP picture.'); // a real picture, not a renamed file
     await register(req, res);
   } catch (err) {
     if (req.file) await fs.promises.unlink(req.file.path).catch(() => {}); // nothing was registered: drop the photo
@@ -282,12 +332,14 @@ router.get('/:id', async (req, res) => {
     depreciation: financial ? depreciation(asset) : null,
     site_checks: siteChecks.map((c) => ({ ...c, far: Boolean(c.far), qr_scanned: Boolean(c.qr_scanned), location_saved: Boolean(c.location_saved) })),
     site_check_max_distance_m: config.siteCheckMaxDistanceM,
+    site_check_max_accuracy_m: config.siteCheckMaxAccuracyM,
     permissions: {
       can_edit: editor,
       can_dispose: has(req.user, 'request.create') && !locked,
       can_request: has(req.user, 'request.create') && !locked,
       can_maintain: has(req.user, 'maintenance.record') && !locked,
       can_inspect: has(req.user, 'inspection.record') && !locked,
+      can_check_follow_ups: checksFollowUps(req.user) && !locked,
       can_edit_financial: (has(req.user, 'financial.edit') || has(req.user, 'asset.edit')) && !locked,
       can_reserve: has(req.user, 'reservation.request') && !locked && asset.is_reservable,
       can_view_financial: financial,
@@ -352,15 +404,23 @@ router.post('/:id/workflow', async (req, res) => {
     const e = parse(evidenceSchema, evidence);
     const photo = await db('asset_documents').where({ id: e.photo_document_id, asset_id: asset.id, doc_type: 'PHOTO', uploaded_by: req.user.id }).first();
     if (!photo) throw fail('photo_document_id', 'Take a photo of the asset on site and add it to the verification.');
+    // the verifier must be at the asset: a rough reading cannot show it, and a far one shows they are not
+    const accuracy = Math.round(e.accuracy_m);
+    if (accuracy > config.siteCheckMaxAccuracyM) {
+      throw fail('accuracy_m', `Your location is only precise to ± ${accuracy} m; it must be within ± ${config.siteCheckMaxAccuracyM} m. Step outside, wait for the GPS and measure again.`);
+    }
+    const place = placeCheck(asset, e, config.siteCheckMaxDistanceM);
+    if (place.far) {
+      throw fail('latitude', `You are ${place.distance_m} m from where this asset is recorded; you must be within ${config.siteCheckMaxDistanceM} m to verify it. Go to the asset and measure again. If the recorded location is wrong, send the registration back to be corrected.`);
+    }
     check = {
-      asset_id: asset.id, user_id: req.user.id, latitude: e.latitude, longitude: e.longitude,
-      accuracy_m: e.accuracy_m == null ? null : Math.round(e.accuracy_m),
-      ...placeCheck(asset, e, config.siteCheckMaxDistanceM),
-      qr_scanned: isOwnLabel(e.qr_code, asset.asset_code), found_condition: e.found_condition, photo_document_id: photo.id, note: e.note,
+      asset_id: asset.id, user_id: req.user.id, latitude: e.latitude, longitude: e.longitude, accuracy_m: accuracy,
+      ...place,
+      qr_scanned: isOwnLabel(e.qr_code, asset), found_condition: e.found_condition, photo_document_id: photo.id, note: e.note,
     };
   }
 
-  const update = { approval_state: t.to, updated_at: db.fn.now() };
+  const update = { approval_state: t.to, approval_state_at: db.fn.now(), updated_at: db.fn.now() };
   if (action === 'submit') update.submitted_by = req.user.id;
   if (action === 'review') update.reviewed_by = req.user.id;
   if (action === 'approve') update.approved_by = req.user.id;
@@ -430,7 +490,7 @@ router.post('/:id/status', guardAsset('asset.edit'), async (req, res) => {
 
 const utilizationSchema = z.object({
   use_type: oneOf(USE_TYPES, 'Use type'),
-  user_party: optStr(200),
+  user_party: optNameText(200, 'User or party'),
   purpose: optStr(2000),
   authorization_basis: optStr(255),
   start_date: dateStr,
@@ -475,7 +535,7 @@ const maintenanceSchema = z.object({
   kind: oneOf(MAINTENANCE_KINDS, 'Kind').default('ROUTINE'),
   description: optStr(2000),
   cost: money,
-  provider: optStr(200),
+  provider: optNameText(200, 'Provider'),
   status: oneOf(MAINTENANCE_STATUSES, 'Status').default('COMPLETED'),
   next_maintenance_date: optDate,
 });
@@ -483,6 +543,7 @@ const maintenanceSchema = z.object({
 router.post('/:id/maintenance', guardAsset('maintenance.record'), async (req, res) => {
   const d = parse(maintenanceSchema, req.body);
   if (d.next_maintenance_date && d.next_maintenance_date < d.maintenance_date) throw fail('next_maintenance_date', 'The next date cannot be before this maintenance date.');
+  if (d.status !== 'PLANNED' && !notAfterToday(d.maintenance_date)) throw fail('maintenance_date', 'Only planned maintenance can be dated in the future.');
   const [id] = await db('maintenance_records').insert({ ...d, asset_id: req.asset.id, recorded_by: req.user.id });
   await logAudit(null, req.user, {
     action: 'MAINTENANCE_ADD', entity: 'maintenance', entityId: id, assetId: req.asset.id,
@@ -507,8 +568,8 @@ router.patch('/:id/maintenance/:mid', guardAsset('maintenance.record'), async (r
 });
 
 const inspectionSchema = z.object({
-  inspection_date: dateStr,
-  inspector: reqStr(160, 'Inspector'),
+  inspection_date: pastDate,
+  inspector: reqPersonName(160, 'Inspector'),
   condition_found: oneOf(CONDITIONS, 'Condition'),
   result: oneOf(INSPECTION_RESULTS, 'Result').default('PASSED'),
   notes: optStr(2000),
@@ -523,6 +584,7 @@ const inspectionSchema = z.object({
 router.post('/:id/inspections', guardAsset('inspection.record'), async (req, res) => {
   const { follow_up, follow_up_due, ...d } = parse(inspectionSchema, req.body);
   if (d.next_inspection_date && d.next_inspection_date < d.inspection_date) throw fail('next_inspection_date', 'The next date cannot be before this inspection date.');
+  if (follow_up_due && follow_up_due < d.inspection_date) throw fail('follow_up_due', 'The follow-up cannot be due before the inspection.');
   const asset = req.asset;
   const id = await db.transaction(async (trx) => {
     const [newId] = await trx('inspection_records').insert({ ...d, asset_id: asset.id, recorded_by: req.user.id });
@@ -559,20 +621,68 @@ router.post('/:id/inspections', guardAsset('inspection.record'), async (req, res
 
 // ------------------------------------------------------------------ follow-up actions
 
-router.post('/:id/follow-ups', guardAsset(['asset.edit', 'inspection.record']), async (req, res) => {
-  const d = parse(z.object({ description: reqStr(500, 'Description'), due_date: optDate, assigned_to: optStr(160) }), req.body);
+/**
+ * Who checks that a follow-up was really done: the Inspector, or a verification manager (the Kebele and Kifle Ketema
+ * Administrators). The asset's keeper (the Sector Administrator) does the work and reports it done; only a note it
+ * added itself it may close on its own word.
+ */
+const checksFollowUps = (user) => has(user, 'inspection.record') || has(user, 'verification.manage');
+const FOLLOW_UP_ACCESS = ['asset.edit', 'inspection.record', 'verification.manage'];
+
+async function openFollowUp(req) {
+  const f = await db('follow_up_actions').where({ id: req.params.fid, asset_id: req.asset.id }).first();
+  if (!f) throw notFound();
+  if (!['OPEN', 'REPORTED'].includes(f.status)) throw conflict('This follow-up is already closed.');
+  return f;
+}
+
+router.post('/:id/follow-ups', guardAsset(FOLLOW_UP_ACCESS), async (req, res) => {
+  const d = parse(z.object({ description: reqStr(500, 'Description'), due_date: optDate, assigned_to: optNameText(160, 'Assigned to') }), req.body);
   const [id] = await db('follow_up_actions').insert({ ...d, asset_id: req.asset.id, source_type: 'MANUAL', created_by: req.user.id });
   await logAudit(null, req.user, { action: 'FOLLOW_UP_ADD', entity: 'follow_up', entityId: id, assetId: req.asset.id, summary: `${req.asset.asset_code}: follow-up - ${d.description}` });
   res.status(201).json(await db('follow_up_actions').where({ id }).first());
 });
 
-router.post('/:id/follow-ups/:fid/close', guardAsset(['asset.edit', 'inspection.record']), async (req, res) => {
-  const { resolution } = parse(z.object({ resolution: reqStr(500, 'What was done') }), req.body);
-  const f = await db('follow_up_actions').where({ id: req.params.fid, asset_id: req.asset.id }).first();
-  if (!f) throw notFound();
-  if (f.status !== 'OPEN') throw conflict('This follow-up is already closed.');
-  await db('follow_up_actions').where({ id: f.id }).update({ status: 'DONE', resolution, closed_by: req.user.id, closed_at: db.fn.now() });
-  await logAudit(null, req.user, { action: 'FOLLOW_UP_CLOSE', entity: 'follow_up', entityId: f.id, assetId: req.asset.id, summary: `${req.asset.asset_code}: follow-up done - ${resolution}` });
+router.post('/:id/follow-ups/:fid/close', guardAsset(FOLLOW_UP_ACCESS), async (req, res) => {
+  const { resolution } = parse(z.object({ resolution: optStr(500) }), req.body);
+  const f = await openFollowUp(req);
+  const asset = req.asset;
+  const ownNote = f.source_type === 'MANUAL' && f.created_by === req.user.id;
+  if (!checksFollowUps(req.user) && !ownNote) {
+    // the keeper reports the work done; the Inspector or the Kebele Administrator checks it
+    if (f.status === 'REPORTED') throw conflict('This follow-up was already reported done and waits for a check.');
+    if (!resolution) throw fail('resolution', 'Say what was done.');
+    await db('follow_up_actions').where({ id: f.id }).update({ status: 'REPORTED', resolution, reported_by: req.user.id, reported_at: db.fn.now() });
+    await logAudit(null, req.user, { action: 'FOLLOW_UP_REPORT', entity: 'follow_up', entityId: f.id, assetId: asset.id, summary: `${asset.asset_code}: follow-up reported done - ${resolution}` });
+    const message = {
+      exceptUserId: req.user.id, type: 'FOLLOW_UP_REPORTED', title: `${asset.asset_code}: follow-up reported done, to check`,
+      body: `${f.description} - ${resolution}`, dedupeKey: `FU:${f.id}:reported:${Date.now()}`,
+    };
+    for (const permission of ['inspection.record', 'verification.manage']) await notifyAsset(asset, permission, message);
+    return res.json(await db('follow_up_actions').where({ id: f.id }).first());
+  }
+  const text = resolution || f.resolution;
+  if (!text) throw fail('resolution', 'Say what was done.');
+  await db('follow_up_actions').where({ id: f.id }).update({ status: 'DONE', resolution: text, closed_by: req.user.id, closed_at: db.fn.now() });
+  await logAudit(null, req.user, {
+    action: 'FOLLOW_UP_CLOSE', entity: 'follow_up', entityId: f.id, assetId: asset.id,
+    summary: `${asset.asset_code}: follow-up ${f.status === 'REPORTED' ? 'checked and closed' : 'done'} - ${text}`,
+  });
+  res.json(await db('follow_up_actions').where({ id: f.id }).first());
+});
+
+router.post('/:id/follow-ups/:fid/reopen', guardAsset(FOLLOW_UP_ACCESS), async (req, res) => {
+  if (!checksFollowUps(req.user)) throw forbidden('The Inspector or the Kebele Administrator checks follow-ups.');
+  const { note } = parse(z.object({ note: reqStr(500, 'What is still missing') }), req.body);
+  const f = await openFollowUp(req);
+  if (f.status !== 'REPORTED') throw conflict('Only a follow-up reported done can be sent back.');
+  const asset = req.asset;
+  await db('follow_up_actions').where({ id: f.id }).update({ status: 'OPEN', resolution: null, reported_by: null, reported_at: null });
+  await logAudit(null, req.user, { action: 'FOLLOW_UP_REOPEN', entity: 'follow_up', entityId: f.id, assetId: asset.id, summary: `${asset.asset_code}: follow-up sent back - ${note}` });
+  await notifyUser(f.reported_by, {
+    type: 'FOLLOW_UP_REOPENED', title: `${asset.asset_code}: follow-up sent back`, body: `${f.description} - ${note}`,
+    assetId: asset.id, link: `/assets/${asset.id}`, dedupeKey: `FU:${f.id}:reopened:${Date.now()}`,
+  });
   res.json(await db('follow_up_actions').where({ id: f.id }).first());
 });
 
@@ -586,14 +696,25 @@ const transferSchema = z.object({
   to_department_id: optIdRef,
   transfer_date: dateStr,
   reason: reqStr(500, 'A reason'),
-  authorized_by: reqStr(200, 'The authorising person or office'),
-  new_holder: optStr(200),
+  authorized_by: reqNameText(200, 'The authorising person or office'),
+  new_holder: optNameText(200, 'New holder'),
 });
+
+/**
+ * Where a transfer may send the asset: inside the asker's own area. A Kebele Administrator also sends assets on to
+ * the other Kebeles of its own Kifle Ketema (the Kifle Ketema Administrator approves): it answers for the whole Kebele.
+ */
+async function transferReach(user) {
+  if (user.role !== ROLES.KEBELE_ADMIN) return user;
+  const kifle = await db('kebeles').whereIn('id', user.scope.kebeles).whereNotNull('kifle_ketema_id').distinct().pluck('kifle_ketema_id');
+  return { ...user, role: ROLES.KIFLE_ADMIN, scope: { ...user.scope, kifle } };
+}
 
 router.post('/:id/transfers', guardAsset('request.create'), async (req, res) => {
   const d = parse(transferSchema, req.body);
   const asset = req.asset;
-  const dest = await resolveRefs(req.user, {
+  if (req.user.role === ROLES.KEBELE_ADMIN && !d.to_kebele_id) throw fail('to_kebele_id', 'Choose a Kebele.');
+  const dest = await resolveRefs(await transferReach(req.user), {
     ...asset, kifle_ketema_id: d.to_kifle_ketema_id, kebele_id: d.to_kebele_id,
     sector_id: d.to_sector_id ?? asset.sector_id,
     department_id: d.to_department_id ?? (d.to_sector_id && d.to_sector_id !== asset.sector_id ? null : asset.department_id),
@@ -628,20 +749,7 @@ router.post('/:id/transfers', guardAsset('request.create'), async (req, res) => 
 // ------------------------------------------------------------------ valuation (financial information)
 
 router.post('/:id/valuations', guardAsset(['financial.edit', 'asset.edit']), async (req, res) => {
-  const d = parse(z.object({ valuation_date: dateStr, value: reqMoney, method: optStr(200), notes: optStr(2000) }), req.body);
-  const asset = req.asset;
-  const id = await db.transaction(async (trx) => {
-    const [newId] = await trx('asset_valuations').insert({ ...d, asset_id: asset.id, recorded_by: req.user.id });
-    // the asset shows the most recent valuation
-    const latest = await trx('asset_valuations').where({ asset_id: asset.id }).orderBy('valuation_date', 'desc').orderBy('id', 'desc').first();
-    await trx('assets').where({ id: asset.id }).update({ current_valuation: latest.value, valuation_date: latest.valuation_date, updated_at: db.fn.now() });
-    await logAudit(trx, req.user, {
-      action: 'VALUATION_ADD', entity: 'valuation', entityId: newId, assetId: asset.id,
-      summary: `${asset.asset_code}: valued at ${d.value} ETB on ${d.valuation_date}`,
-    });
-    return newId;
-  });
-  res.status(201).json(await db('asset_valuations').where({ id }).first());
+  res.status(201).json(await recordValuation(req.user, req.asset, parse(valuationSchema, req.body)));
 });
 
 // ------------------------------------------------------------------ documents and photos
@@ -682,6 +790,7 @@ router.post('/:id/documents', guardAsset(DOC_UPLOADERS), upload.single('file'), 
   const discard = () => req.file && fs.promises.unlink(req.file.path).catch(() => {});
   try {
     if (!req.file) throw fail('file', 'Choose a file to upload.');
+    await assertFileContent(req.file); // what the file really is, not what its name says
     const d = parse(documentSchema, req.body);
     if (d.related_id && !d.related_type) throw fail('related_type', 'Choose what this document belongs to.');
     const [id] = await db('asset_documents').insert({
@@ -721,6 +830,22 @@ router.get('/:id/documents/:did/download', async (req, res) => {
   await logAudit(null, req.user, { action: 'DOCUMENT_DOWNLOAD', entity: 'document', entityId: doc.id, assetId: asset.id, summary: `${asset.asset_code}: downloaded "${doc.title}"` });
   res.type(doc.mime_type).attachment(doc.original_name);
   fs.createReadStream(file).pipe(res);
+});
+
+// Correct a document's title, type or expiry date (the file itself is replaced by uploading a new one).
+router.patch('/:id/documents/:did', guardAsset('asset.edit'), async (req, res) => {
+  const doc = await db('asset_documents').where({ id: req.params.did, asset_id: req.asset.id }).first();
+  if (!doc) throw notFound();
+  const patch = present(parse(documentSchema.pick({ doc_type: true, title: true, expires_on: true }).partial(), req.body), req.body);
+  const changes = diff(doc, { ...doc, ...patch }, Object.keys(patch));
+  if (Object.keys(changes).length) {
+    await db('asset_documents').where({ id: doc.id }).update(patch);
+    await logAudit(null, req.user, {
+      action: 'DOCUMENT_UPDATE', entity: 'document', entityId: doc.id, assetId: req.asset.id,
+      summary: `${req.asset.asset_code}: document "${doc.title}" corrected (${Object.keys(changes).join(', ')})`, changes,
+    });
+  }
+  res.json(await db('asset_documents').where({ id: doc.id }).first());
 });
 
 router.delete('/:id/documents/:did', guardAsset('asset.edit'), async (req, res) => {

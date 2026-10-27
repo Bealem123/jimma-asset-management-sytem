@@ -10,9 +10,12 @@
     "migrate": "node src/scripts/migrate.js",
     "seed:master": "node src/scripts/seedMaster.js",
     "create-admin": "node src/scripts/createAdmin.js",
+    "reset-password": "node src/scripts/resetPassword.js",
     "provision-admins": "node src/scripts/provisionAdmins.js",
     "backup": "node src/scripts/backup.js",
     "restore": "node src/scripts/restore.js",
+    "insa:setup": "node src/scripts/insaTestCopy.js setup",
+    "insa:start": "node src/scripts/insaTestCopy.js start",
     "test": "node --test --test-concurrency=1 \"test/**/*.test.js\""
   },
   "dependencies": {

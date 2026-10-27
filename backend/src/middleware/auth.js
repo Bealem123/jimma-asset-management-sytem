@@ -4,6 +4,7 @@ import { config } from '../config.js';
 import { db } from '../db.js';
 import { loadRolePermissions, loadScope } from '../lib/permissions.js';
 import { HttpError, forbidden } from './errors.js';
+import { IDLE_MINUTES } from '../lib/security.js';
 
 export function signToken(user) {
   return jwt.sign({ sub: user.id, tv: user.token_version ?? 0 }, config.jwtSecret, { expiresIn: config.jwtExpiresIn });
@@ -33,6 +34,10 @@ export async function authenticate(req, res, next) {
   if (!user) throw new HttpError(401, 'This account is not active.');
   // Changing a password or ending sessions bumps token_version, which invalidates every older token.
   if ((payload.tv ?? 0) !== user.token_version) throw new HttpError(401, 'Your session has ended. Please sign in again.');
+  // a session left without activity ends; activity is noted at most once a minute
+  const idle = user.last_seen_at ? Date.now() - new Date(user.last_seen_at).getTime() : 0;
+  if (idle > IDLE_MINUTES * 60000) throw new HttpError(401, `Your session ended after ${IDLE_MINUTES} minutes without activity. Please sign in again.`);
+  if (!user.last_seen_at || idle > 60000) await db('users').where({ id: user.id }).update({ last_seen_at: new Date() });
   req.user = await hydrateUser(user);
   // A temporary password must be replaced first: until then only the sign-in/password endpoints work.
   if (user.must_change_password && !req.originalUrl.startsWith('/api/auth/')) {

@@ -37,7 +37,7 @@ export default function PublicAsset() {
 
   useEffect(() => {
     fetch(`/api/public/assets/${encodeURIComponent(token)}`)
-      .then(async (r) => { if (!r.ok) throw new Error(r.status === 404 ? 'No asset matches this label.' : 'The asset could not be loaded. Try again.'); return r.json(); })
+      .then(async (r) => { if (!r.ok) throw new Error(r.status === 404 ? 'No asset matches this label.' : r.status === 410 ? 'This label has been cancelled: the asset now carries a new label.' : 'The asset could not be loaded. Try again.'); return r.json(); })
       .then(setCard)
       .catch((e) => setError(e.message));
   }, [token]);

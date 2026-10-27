@@ -9,7 +9,7 @@ import { ROLES } from '../lib/constants.js';
 import { optStr, reqStr } from '../lib/schemas.js';
 import { addDays, endedPeriods, periodByKey, periodName, todayIso } from '../lib/calendar.js';
 import {
-  MONTHLY_LINK, RECEIVER_ROLES, REPORTS_TO, areaOf, buildSnapshot, deadlineOf, loadPeople, parseSnapshot, reportCalendar, reportRows,
+  MONTHLY_LINK, RECEIVER_ROLES, REPORTS_TO, areaOf, buildSnapshot, deadlineOf, loadPeople, monthlyReminder, parseSnapshot, reportCalendar, reportRows,
   reviewersOf, sortTeam, statusOf, teamOf, withScopes,
 } from '../lib/monthlyReports.js';
 
@@ -37,6 +37,9 @@ function reportable(req) {
 }
 
 // ---------------------------------------------------------------- the user's own reports
+
+/** For the banner on every dashboard: this user's report while it is owed, and the reports waiting for their decision. */
+router.get('/reminder', async (req, res) => res.json(await monthlyReminder(req.user)));
 
 router.get('/', async (req, res) => {
   const calendar = await reportCalendar();
@@ -151,6 +154,7 @@ async function reportPayload(req, id) {
     ...summary(report), period, deadline, ...statusOf(report, deadline, todayIso()),
     reporter: person({ ...reporter, role: report.role }), area: areaOf(people, reporter),
     decided_by: decider, snapshot: parseSnapshot(report.snapshot), can_decide: isReviewer && report.status === 'SUBMITTED',
+    can_resend: report.user_id === req.user.id && report.status === 'RETURNED', // its sender corrects it and sends it again
   };
 }
 

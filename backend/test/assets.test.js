@@ -261,19 +261,26 @@ describe('approval workflow and status', () => {
     const notMine = await review(a, { ...theirs }).expect(400);
     assert.ok(notMine.body.details.photo_document_id);
     await review(a, { ...(await siteEvidence(a, fx.users.kebeleA)), found_condition: 'WRONG' }).expect(400);
-    // about 1.1 km away, with the asset's own QR label scanned
-    const far = await siteEvidence(a, fx.users.kebeleA, { latitude: 7.6831, qr_code: `https://assets.jimma.example/scan/${a.asset_code}`, found_condition: 'FAIR', note: 'Parked at the depot' });
-    await review(a, far).expect(200);
+    // the verifier must be at the asset: about 1.1 km away is refused, and so is a reading too rough to tell
+    const far = await review(a, await siteEvidence(a, fx.users.kebeleA, { latitude: 7.6831 })).expect(400);
+    assert.match(far.body.details.latitude, /You are 11\d\d m from where this asset is recorded; you must be within 50 m/);
+    const rough = await review(a, await siteEvidence(a, fx.users.kebeleA, { accuracy_m: 120 })).expect(400);
+    assert.match(rough.body.details.accuracy_m, /± 120 m; it must be within ± 50 m/);
+    await review(a, { ...(await siteEvidence(a, fx.users.kebeleA)), accuracy_m: undefined }).expect(400);
+    assert.equal((await db('assets').where({ id: a.id }).first()).approval_state, 'SUBMITTED', 'nothing was verified');
+    // about 22 m away, with the asset's own QR label scanned
+    const near = await siteEvidence(a, fx.users.kebeleA, { latitude: 7.6733, qr_code: `https://assets.jimma.example/scan/${a.asset_code}`, found_condition: 'FAIR', note: 'Parked at the depot' });
+    await review(a, near).expect(200);
     const detail = (await api('get', `/api/assets/${a.id}`, fx.users.jirenAdmin).expect(200)).body;
     const [check] = detail.site_checks;
     assert.equal(detail.asset.approval_state, 'REVIEWED');
-    assert.ok(check.distance_m > 1000 && check.distance_m < 1200, String(check.distance_m));
-    assert.deepEqual([check.far, check.qr_scanned, check.found_condition, check.location_saved], [true, true, 'FAIR', false]);
-    assert.equal(detail.site_check_max_distance_m, 300);
+    assert.ok(check.distance_m > 15 && check.distance_m < 30, String(check.distance_m));
+    assert.deepEqual([check.far, check.qr_scanned, check.found_condition, check.location_saved], [false, true, 'FAIR', false]);
+    assert.deepEqual([detail.site_check_max_distance_m, detail.site_check_max_accuracy_m], [50, 50]);
     // the approval queue shows it too
     const queue = (await api('get', '/api/assets?approval_state=REVIEWED&page_size=100', fx.users.jirenAdmin).expect(200)).body.rows;
     const row = queue.find((r) => r.id === a.id);
-    assert.equal(Number(row.site_far), 1);
+    assert.equal(Number(row.site_far), 0);
     assert.equal(row.site_found_condition, 'FAIR');
     // an asset without a recorded location gets the verifier's location; a scan of another label does not count
     const b = await photographed(fx, fx.users.officer);
@@ -282,6 +289,38 @@ describe('approval workflow and status', () => {
     const after = (await api('get', `/api/assets/${b.id}`, fx.users.kebeleA).expect(200)).body;
     assert.deepEqual([after.site_checks[0].location_saved, after.site_checks[0].qr_scanned, after.site_checks[0].far], [true, false, false]);
     assert.equal(Number(after.asset.latitude), 7.6731);
+  });
+
+  it('the QR code printed on the label counts as a scan of the asset on site, and only its own', async () => {
+    const review = (a, evidence) => api('post', `/api/assets/${a.id}/workflow`, fx.users.kebeleA).send({ action: 'review', evidence });
+    const label = async (x) => `https://assets.jimma.example/a/${(await db('assets').where({ id: x.id }).first()).public_token}`;
+    const a = await photographed(fx, fx.users.officer);
+    const b = await photographed(fx, fx.users.officer);
+    for (const x of [a, b]) {
+      await api('get', `/api/assets/${x.id}/qr.svg`, fx.users.officer).expect(200); // printing the label gives it its address
+      await act(fx.users.officer, x, 'submit').expect(200);
+    }
+    await review(a, await siteEvidence(a, fx.users.kebeleA, { qr_code: await label(a) })).expect(200);
+    await review(b, await siteEvidence(b, fx.users.kebeleA, { qr_code: await label(a) })).expect(200); // a's label on b
+    const scanned = async (x) => (await api('get', `/api/assets/${x.id}`, fx.users.kebeleA).expect(200)).body.site_checks[0].qr_scanned;
+    assert.equal(await scanned(a), true);
+    assert.equal(await scanned(b), false);
+  });
+
+  it('refuses a location outside Jimma City, typed in or reported by the device on site', async () => {
+    const addis = await api('post', '/api/assets', fx.users.officer).send(assetBody(fx, { latitude: 9.00843, longitude: 38.702428 })).expect(400);
+    assert.ok(addis.body.details.latitude && addis.body.details.longitude);
+    const chicago = await api('post', '/api/assets', fx.users.officer).send(assetBody(fx, { latitude: 41.8523, longitude: -87.6669 })).expect(400);
+    assert.match(chicago.body.details.latitude, /outside Jimma City/);
+    // inside Jimma is accepted; moving it elsewhere is refused
+    const a = await photographed(fx, fx.users.officer, { latitude: 7.6731, longitude: 36.8344 });
+    await api('patch', `/api/assets/${a.id}`, fx.users.officer).send({ latitude: 9.00843 }).expect(400);
+    // the verifier on site must be in Jimma too (a laptop guessing its place from the internet is not)
+    await act(fx.users.officer, a, 'submit').expect(200);
+    const away = await api('post', `/api/assets/${a.id}/workflow`, fx.users.kebeleA)
+      .send({ action: 'review', evidence: await siteEvidence(a, fx.users.kebeleA, { latitude: 9.0043905, longitude: 38.6979998 }) }).expect(400);
+    assert.match(away.body.details.latitude, /outside Jimma City/);
+    assert.equal((await db('assets').where({ id: a.id }).first()).approval_state, 'SUBMITTED');
   });
 
   it('roles outside the registration chain cannot verify', async () => {
@@ -329,8 +368,7 @@ describe('approval workflow and status', () => {
 
   it('disposal needs a request, a review and a final approval by different people; the record then locks', async () => {
     const a = await photographed(fx, fx.users.officer);
-    // two different people must decide: here the Kebele Administrator reviews and the Kifle Ketema Administrator approves
-    await allow(fx, 'KEBELE_ADMIN', 'request.decide');
+    // two different people decide: the Kebele Administrator reviews and the Kifle Ketema Administrator approves
     // the plain status change cannot be used to dispose of an asset
     await api('post', `/api/assets/${a.id}/status`, fx.users.officer).send({ status: 'DISPOSED', reason: 'Scrapped' }).expect(400);
     const body = { kind: 'DISPOSAL', reason: 'Scrapped', method: 'SCRAP', disposal_date: '2026-07-01', disposal_value: 1200 };
@@ -340,12 +378,12 @@ describe('approval workflow and status', () => {
     const id = requested.body.request.id;
     await api('post', `/api/assets/${a.id}/disposal`, fx.users.officer).send(body).expect(409); // already waiting
     assert.notEqual((await db('assets').where({ id: a.id }).first()).status, 'DISPOSED'); // nothing happened yet
-    await api('post', `/api/requests/${id}/review`, fx.users.officer).expect(403); // cannot approve requests
+    await api('post', `/api/requests/${id}/review`, fx.users.officer).expect(403); // cannot decide requests
     await api('post', `/api/requests/${id}/approve`, fx.users.jirenAdmin).expect(409); // must be reviewed first
+    await api('post', `/api/requests/${id}/review`, fx.users.jirenAdmin).expect(403); // the Kebele Administrator reviews
     await api('post', `/api/requests/${id}/review`, fx.users.kebeleA).expect(200);
-    await api('post', `/api/requests/${id}/approve`, fx.users.kebeleA).expect(409); // the reviewer cannot also approve
+    await api('post', `/api/requests/${id}/approve`, fx.users.kebeleA).expect(403); // the reviewer does not approve
     await api('post', `/api/requests/${id}/approve`, fx.users.jirenAdmin).expect(200);
-    await restore(fx, 'KEBELE_ADMIN');
     const disposal = await db('asset_disposals').where({ asset_id: a.id }).first();
     assert.equal(disposal.method, 'SCRAP');
     assert.equal(disposal.approved_by, fx.users.jirenAdmin.id);
@@ -417,6 +455,7 @@ describe('asset history: utilization, maintenance, inspection, transfer, valuati
     const rid = requested.body.request.id;
     assert.equal((await api('get', `/api/assets/${asset.id}`, fx.users.officer)).body.asset.kebele_id, fx.k1); // not moved until approved
     await api('post', `/api/requests/${rid}/approve`, fx.users.officer).expect(403);
+    await api('post', `/api/requests/${rid}/review`, fx.users.kebeleA).expect(200); // the Kebele Administrator of the asset reviews
     await api('post', `/api/requests/${rid}/approve`, fx.users.jirenAdmin).expect(200);
     const d = (await api('get', `/api/assets/${asset.id}`, fx.users.officer)).body;
     assert.equal(d.asset.kebele_id, fx.k2);
@@ -434,6 +473,8 @@ describe('asset history: utilization, maintenance, inspection, transfer, valuati
     // the Construction Sector Administrator covers every Kebele, so it can ask for the move; the Kifle Ketema Administrator of the asset decides
     const cross = await post('transfers', { to_kebele_id: fx.k3, transfer_date: '2026-06-02', reason: 'Cross-Kifle move', authorized_by: 'Mayor' }, fx.users.sectorAdmin).expect(202);
     await api('post', `/api/requests/${cross.body.request.id}/approve`, fx.users.sectorAdmin).expect(403); // it requests, it does not decide
+    await api('post', `/api/requests/${cross.body.request.id}/review`, fx.users.kebeleA).expect(404); // not the asset's Kebele (it is in B now)
+    await api('post', `/api/requests/${cross.body.request.id}/review`, fx.users.kebeleB).expect(200);
     await api('post', `/api/requests/${cross.body.request.id}/approve`, fx.users.jirenAdmin).expect(200);
     assert.equal((await db('assets').where({ id: asset.id }).first()).kebele_id, fx.k3);
   });
@@ -451,6 +492,19 @@ describe('asset history: utilization, maintenance, inspection, transfer, valuati
     const d = (await api('get', `/api/assets/${asset.id}`, finance)).body;
     assert.equal(d.asset.current_valuation, 7800000);
     assert.equal(d.valuations.length, 3);
+  });
+
+  it('money is recorded for dates that have come, and the valuation backlog counts each asset once', async () => {
+    const finance = fx.users.finance;
+    const later = new Date(Date.now() + 10 * 86400000).toISOString().slice(0, 10);
+    await post('valuations', { valuation_date: later, value: 1 }, finance).expect(400);
+    await api('post', '/api/finance/valuations', finance).send({ asset_id: asset.id, valuation_date: later, value: 1 }).expect(400);
+    await api('post', '/api/finance/revenues', finance).send({ asset_id: asset.id, revenue_type: 'RENT', amount: 1, received_date: later }).expect(400);
+    await post('revenues', { revenue_type: 'RENT', amount: 1, received_date: later }, finance).expect(400);
+    // an asset never valued is "unvalued" only, not also "revaluation due": the tile adds up to the list
+    const { totals } = (await api('get', '/api/finance/overview', finance).expect(200)).body;
+    const backlog = (await api('get', '/api/finance/backlog', finance).expect(200)).body;
+    assert.equal(totals.unvalued_count + totals.revaluation_due_count, backlog.length);
   });
 
   it('the history timeline lists everything that happened, newest first', async () => {
@@ -484,6 +538,16 @@ describe('documents and photos', () => {
     await api('get', `/api/assets/${asset.id}/documents/${res.body.id}/download`).expect(401);
   });
 
+  it("corrects a document's title, type and expiry, and records the correction", async () => {
+    const res = await upload(asset, fx.users.officer, Buffer.from('%PDF-1.4 x'), 'licence.pdf', 'application/pdf', { title: 'Licnce' }).expect(201);
+    const fixed = await api('patch', `/api/assets/${asset.id}/documents/${res.body.id}`, fx.users.officer)
+      .send({ title: 'Operating licence', doc_type: 'CONTRACT', expires_on: '2027-01-31' }).expect(200);
+    assert.deepEqual([fixed.body.title, fixed.body.doc_type, String(fixed.body.expires_on).slice(0, 10)], ['Operating licence', 'CONTRACT', '2027-01-31']);
+    assert.ok(await db('audit_logs').where({ action: 'DOCUMENT_UPDATE', entity_id: res.body.id }).first());
+    await api('patch', `/api/assets/${asset.id}/documents/${res.body.id}`, fx.users.officer).send({ title: '' }).expect(400);
+    await api('patch', `/api/assets/${asset.id}/documents/${res.body.id}`, fx.users.mayor).send({ title: 'x' }).expect(403);
+  });
+
   it('stores files under random names, never the uploaded name', async () => {
     const row = await db('asset_documents').where({ asset_id: asset.id }).first();
     assert.notEqual(row.stored_name, 'deed.pdf');
@@ -494,6 +558,10 @@ describe('documents and photos', () => {
     await upload(asset, fx.users.officer, Buffer.from('<script>alert(1)</script>'), 'x.html', 'text/html').expect(400);
     await upload(asset, fx.users.officer, Buffer.from('<svg onload=alert(1)>'), 'x.svg', 'image/svg+xml').expect(400);
     await upload(asset, fx.users.officer, Buffer.from('MZ'), 'x.pdf', 'application/x-msdownload').expect(400);
+    // a page or a program renamed and labelled as a PDF or a picture is refused by what it really contains
+    const fake = await upload(asset, fx.users.officer, Buffer.from('<html><script>alert(1)</script></html>'), 'deed.pdf', 'application/pdf').expect(400);
+    assert.ok(fake.body.details.file);
+    await upload(asset, fx.users.officer, Buffer.from('MZ\x90\x00 not a picture'), 'photo.png', 'image/png').expect(400);
   });
 
   it('requires a title and a valid document type, and leaves no orphan file behind', async () => {
@@ -517,6 +585,45 @@ describe('documents and photos', () => {
     const fs = await import('node:fs');
     assert.equal(fs.existsSync(`${config.uploadDir}/${row.stored_name}`), false);
     assert.ok(await db('audit_logs').where({ action: 'DOCUMENT_REMOVE', asset_id: asset.id }).first());
+  });
+});
+
+describe('deleting an asset: only a draft its registrar never sent', () => {
+  let fx;
+  before(async () => { fx = await setupFixture(); });
+
+  const listed = async (user, a) => (await api('get', '/api/assets?page_size=100', user).expect(200)).body.rows.find((r) => r.id === a.id);
+
+  it('the registrar deletes a draft nobody else has seen, with its photos; the deletion stays in the audit trail', async () => {
+    const a = await photographed(fx, fx.users.officer);
+    assert.equal((await listed(fx.users.officer, a)).can_delete, true);
+    assert.equal((await listed(fx.users.kebeleA, a)).can_delete, false, 'not the registrar');
+    await api('delete', `/api/assets/${a.id}`, fx.users.kebeleA).expect(403); // may not register, so may not delete
+    await api('delete', `/api/assets/${a.id}`, fx.users.mayor).expect(403);
+    await api('delete', `/api/assets/${a.id}`, fx.users.officer).expect(200);
+    await api('get', `/api/assets/${a.id}`, fx.users.officer).expect(404);
+    assert.equal((await db('asset_documents').where({ asset_id: a.id })).length, 0);
+    const log = await db('audit_logs').where({ asset_id: a.id, action: 'DELETE' }).first();
+    assert.match(log.summary, new RegExp(a.asset_code));
+  });
+
+  it('an asset that was sent once stays, even after it was returned to draft; so does every other asset', async () => {
+    const a = await photographed(fx, fx.users.officer);
+    await api('post', `/api/assets/${a.id}/workflow`, fx.users.officer).send({ action: 'submit' }).expect(200);
+    await api('post', `/api/assets/${a.id}/workflow`, fx.users.kebeleA).send({ action: 'reject', comment: 'Wrong Kebele' }).expect(200);
+    assert.equal((await db('assets').where({ id: a.id }).first()).approval_state, 'DRAFT');
+    assert.equal((await listed(fx.users.officer, a)).can_delete, false);
+    const refused = await api('delete', `/api/assets/${a.id}`, fx.users.officer).expect(409);
+    assert.match(refused.body.error, /Retire or dispose/);
+    const active = await photographed(fx, fx.users.officer);
+    await activateAsset(fx, active);
+    await api('delete', `/api/assets/${active.id}`, fx.users.officer).expect(409);
+    // a draft somebody has already worked on (here: a use recorded) has a history of its own: it stays too
+    const used = await photographed(fx, fx.users.officer);
+    await api('post', `/api/assets/${used.id}/utilizations`, fx.users.officer).send({ use_type: 'IDLE', start_date: '2026-01-01' }).expect(201);
+    const kept = await api('delete', `/api/assets/${used.id}`, fx.users.officer).expect(409);
+    assert.match(kept.body.error, /other records/);
+    assert.ok(await db('assets').where({ id: used.id }).first());
   });
 });
 

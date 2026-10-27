@@ -5,24 +5,37 @@ import { authenticate, require_ } from '../middleware/auth.js';
 import { HttpError, notFound, parse } from '../middleware/errors.js';
 import { canManageMaster } from '../lib/permissions.js';
 import { logAudit, diff } from '../lib/audit.js';
-import { idRef, optIdRef, reqStr, optStr, bool, present } from '../lib/schemas.js';
+import { idRef, optIdRef, reqNameText, optStr, bool, present, lat, lng } from '../lib/schemas.js';
+import { latInJimma, lngInJimma } from '../lib/jimma.js';
 
 const router = Router();
 router.use(authenticate);
 
 const flags = { is_validated: bool.optional(), is_active: bool.optional() };
+// the centre of an area on the map, where its assets without a GPS position are drawn
+const OUTSIDE = 'This point is outside Jimma City. Jimma lies around 7.67, 36.83: check the coordinates.';
+const centre = { latitude: lat.refine(latInJimma, OUTSIDE), longitude: lng.refine(lngInJimma, OUTSIDE) };
+/** A centre is a point: both coordinates, or neither (checked on the row as it will be saved). */
+function checkCentre(r, data, before = {}) {
+  if (!('latitude' in r.schema.shape)) return;
+  const la = 'latitude' in data ? data.latitude : before.latitude;
+  const lo = 'longitude' in data ? data.longitude : before.longitude;
+  if ((la == null) !== (lo == null)) {
+    throw new HttpError(400, 'Please correct the highlighted fields.', { [la == null ? 'latitude' : 'longitude']: 'Give both the latitude and the longitude of the centre, or neither.' });
+  }
+}
 
 // One entry per master-data table. `parents` are foreign keys that must reference an existing row.
 const RESOURCES = {
   'kifle-ketemas': {
     table: 'kifle_ketemas', label: 'Kifle Ketema',
-    schema: z.object({ name: reqStr(120, 'Name'), ...flags }),
+    schema: z.object({ name: reqNameText(120, 'Name'), ...centre, ...flags }),
     order: ['name'],
   },
   kebeles: {
     table: 'kebeles', label: 'Kebele',
     // A Kebele can be listed before the City confirms which Kifle Ketema it belongs to (kifle_ketema_id stays empty).
-    schema: z.object({ name: reqStr(120, 'Name'), kifle_ketema_id: optIdRef, ...flags }),
+    schema: z.object({ name: reqNameText(120, 'Name'), kifle_ketema_id: optIdRef, ...centre, ...flags }),
     parents: { kifle_ketema_id: 'kifle_ketemas' },
     uniqueName: true,
     select: ['kebeles.*', 'kifle_ketemas.name as kifle_ketema_name'],
@@ -32,12 +45,12 @@ const RESOURCES = {
   },
   sectors: {
     table: 'sectors', label: 'Sector',
-    schema: z.object({ code: reqStr(20, 'Code'), name: reqStr(120, 'Name'), description: optStr(2000), ...flags }),
+    schema: z.object({ code: z.string({ error: 'Code is required.' }).trim().toUpperCase().regex(/^[A-Z0-9-]{1,20}$/, 'Code: 1 to 20 letters, digits or dashes, e.g. LND.'), name: reqNameText(120, 'Name'), description: optStr(2000), ...flags }),
     order: ['code'],
   },
   departments: {
     table: 'departments', label: 'Department',
-    schema: z.object({ name: reqStr(160, 'Name'), sector_id: idRef, is_active: bool.optional() }),
+    schema: z.object({ name: reqNameText(160, 'Name'), sector_id: idRef, is_active: bool.optional() }),
     parents: { sector_id: 'sectors' },
     select: ['departments.*', 'sectors.name as sector_name'],
     join: ['sectors', 'sectors.id', 'departments.sector_id'],
@@ -45,12 +58,12 @@ const RESOURCES = {
   },
   'asset-categories': {
     table: 'asset_categories', label: 'Asset category',
-    schema: z.object({ name: reqStr(120, 'Name'), description: optStr(2000), ...flags }),
+    schema: z.object({ name: reqNameText(120, 'Name'), description: optStr(2000), ...flags }),
     order: ['name'],
   },
   'asset-types': {
     table: 'asset_types', label: 'Asset type',
-    schema: z.object({ name: reqStr(120, 'Name'), category_id: idRef, is_active: bool.optional() }),
+    schema: z.object({ name: reqNameText(120, 'Name'), category_id: idRef, is_active: bool.optional() }),
     parents: { category_id: 'asset_categories' },
     select: ['asset_types.*', 'asset_categories.name as category_name'],
     join: ['asset_categories', 'asset_categories.id', 'asset_types.category_id'],
@@ -105,6 +118,7 @@ router.post('/:resource', require_(canManageMaster), async (req, res) => {
   const r = RESOURCES[req.params.resource];
   if (!r) throw notFound();
   const data = parse(r.schema, req.body);
+  checkCentre(r, data);
   await checkParents(r, data);
   await checkUniqueName(r, data);
   const [id] = await db(r.table).insert(data);
@@ -118,6 +132,7 @@ router.patch('/:resource/:id', require_(canManageMaster), async (req, res) => {
   const before = await db(r.table).where({ id: req.params.id }).first();
   if (!before) throw notFound();
   const data = present(parse(r.schema.partial(), req.body), req.body);
+  checkCentre(r, data, before);
   await checkParents(r, data);
   await checkUniqueName(r, data, before.id);
   const movesKebele = r.table === 'kebeles' && 'kifle_ketema_id' in data && data.kifle_ketema_id !== before.kifle_ketema_id;
