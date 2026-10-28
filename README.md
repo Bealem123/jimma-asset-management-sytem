@@ -247,7 +247,7 @@ frontend/   React (Vite) web app and service worker
 - Assets outside a user's area return **404**, not 403, so their existence is not revealed.
 - Financial figures, purchase/invoice/contract documents and the money figures in monthly reports are limited to roles with the financial permission.
 - Uploads: allow-listed types only (no HTML or SVG), 10 MB limit, random file names, `nosniff`, download as attachment only, every download logged.
-- API keys are shown once and stored only as a hash; the integration API is read-only and never returns money figures.
+- API keys are shown once and stored only as a hash; the integration API is read-only, never returns money figures, and shares only approved and activated assets (drafts and assets awaiting approval stay inside).
 - CSV exports neutralise spreadsheet formulas.
 - For production: serve over HTTPS, set `FRONTEND_ORIGIN` if the UI is on another origin, keep `.env` out of version control, store the backups off the server, and encrypt the server disk (data at rest is not encrypted by the application).
 

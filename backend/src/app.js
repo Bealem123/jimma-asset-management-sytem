@@ -45,12 +45,10 @@ export function createApp() {
     hsts: httpsSite,
     // OpenStreetMap blocks tile requests that carry no referrer, so send the site's origin (and nothing more) to other sites
     referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
-    // the map page loads OpenStreetMap tiles and Esri satellite imagery, and the front page embeds its hero film from
-    // YouTube (privacy-enhanced player); everything else stays same-origin
+    // the map page loads OpenStreetMap tiles and Esri satellite imagery; everything else stays same-origin
     contentSecurityPolicy: {
       directives: {
         ...helmet.contentSecurityPolicy.getDefaultDirectives(),
-        'frame-src': ['https://www.youtube-nocookie.com'],
         'img-src': ["'self'", 'data:', 'blob:', 'https://*.tile.openstreetmap.org', 'https://server.arcgisonline.com'],
         'connect-src': ["'self'"],
         'worker-src': ["'self'", 'blob:'],
@@ -117,7 +115,7 @@ export function createApp() {
   const dist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../frontend/dist');
   if (fs.existsSync(path.join(dist, 'index.html'))) {
     app.use(express.static(dist));
-    // every page address gets the app; a missing file (a name with an extension, e.g. /landing/x.jpg) gets a plain 404,
+    // every page address gets the app; a missing file (a name with an extension, e.g. /brand/x.png) gets a plain 404,
     // never the app's page, which a browser or the offline cache would otherwise keep as that file
     app.get(/^(?!\/api)(?!.*\/[^/]*\.[^/]*$).*/, (req, res) => res.sendFile(path.join(dist, 'index.html')));
   }

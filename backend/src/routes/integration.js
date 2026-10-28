@@ -10,8 +10,11 @@ import { optDate } from '../lib/schemas.js';
 // Read-only REST API for other City systems (GIS, finance, procurement, dashboards ...).
 // Authenticate with an API key created in System administration: send it in the X-API-Key header.
 // Financial figures are never exposed here.
+// Only the official register is shared: assets that went through the whole registration chain (verified on site by
+// the Kebele, approved and activated by the Kifle Ketema). Drafts and assets still waiting for approval stay inside.
 
 const router = Router();
+const registered = () => assetBase().where('assets.approval_state', 'ACTIVE');
 
 const publicAsset = (r) => ({
   asset_id: r.asset_code, name: r.name, category: r.category_name, type: r.asset_type_name, sector: r.sector_name,
@@ -19,17 +22,24 @@ const publicAsset = (r) => ({
   latitude: r.latitude, longitude: r.longitude, status: r.status, condition: r.condition, serial_number: r.serial_number,
   registration_number: r.registration_number, owner: r.owner_name, responsible_office: r.responsible_office,
   responsible_officer: r.responsible_officer, current_holder: r.current_holder, updated_at: r.updated_at,
+  // stable identifiers, so another system matches by id and never by a name that may be corrected later
+  ids: {
+    kifle_ketema: r.kifle_ketema_id, kebele: r.kebele_id, sector: r.sector_id, sector_code: r.sector_code,
+    category: r.category_id, type: r.asset_type_id,
+  },
+  approval_state: r.approval_state,
+  archived: Boolean(r.archived_at), archived_at: r.archived_at ?? null,
 });
 
 const openapi = {
   openapi: '3.0.3',
-  info: { title: 'Jimma City Asset Management - read-only API', version: '1.0.0', description: 'Authenticate with the X-API-Key header.' },
+  info: { title: 'Jimma City Asset Management - read-only API', version: '1.1.0', description: 'Authenticate with the X-API-Key header. 1.1 adds ids (Kifle Ketema, Kebele, sector, category, type), approval_state and archived to each asset, and include_archived to the list.' },
   servers: [{ url: '/api/integration/v1' }],
   components: { securitySchemes: { ApiKey: { type: 'apiKey', in: 'header', name: 'X-API-Key' } } },
   security: [{ ApiKey: [] }],
   paths: {
-    '/assets': { get: { summary: 'List assets (paged)', parameters: ['page', 'page_size', 'status', 'condition', 'kifle_ketema', 'kebele', 'sector', 'updated_since'].map((name) => ({ name, in: 'query', schema: { type: 'string' } })) } },
-    '/assets/{code}': { get: { summary: 'One asset by Asset ID, e.g. AST-000125' } },
+    '/assets': { get: { summary: 'List registered (approved and activated) assets, paged', parameters: ['page', 'page_size', 'status', 'condition', 'kifle_ketema', 'kebele', 'sector', 'updated_since', 'include_archived'].map((name) => ({ name, in: 'query', schema: { type: 'string' } })) } },
+    '/assets/{code}': { get: { summary: 'One registered asset by Asset ID, e.g. AST-000125 (404 while it is not yet approved)' } },
     '/locations': { get: { summary: 'Kifle Ketemas and Kebeles' } },
     '/sectors': { get: { summary: 'Sectors and their departments' } },
     '/categories': { get: { summary: 'Asset categories and types' } },
@@ -50,9 +60,12 @@ router.get('/assets', async (req, res) => {
     kebele: z.string().max(120).optional(),
     sector: z.string().max(120).optional(),
     updated_since: optDate,
+    // a system that keeps references (e.g. Rent) needs to learn that an asset was archived, not just stop seeing it
+    include_archived: z.preprocess((v) => v === 'true' || v === '1', z.boolean()).default(false),
   }), req.query);
   const build = () => {
-    const q = assetBase().whereNull('assets.archived_at');
+    const q = registered();
+    if (!f.include_archived) q.whereNull('assets.archived_at');
     if (f.status) q.where('assets.status', f.status);
     if (f.condition) q.where('assets.condition', f.condition);
     if (f.kifle_ketema) q.where('k.name', f.kifle_ketema);
@@ -67,7 +80,7 @@ router.get('/assets', async (req, res) => {
 });
 
 router.get('/assets/:code', async (req, res) => {
-  const row = await assetBase().where('assets.asset_code', String(req.params.code).toUpperCase()).first();
+  const row = await registered().where('assets.asset_code', String(req.params.code).toUpperCase()).first();
   if (!row) throw notFound('Asset not found.');
   res.json(publicAsset(normalizeAsset(row)));
 });

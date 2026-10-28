@@ -608,11 +608,15 @@ describe('system administration, API access and sessions', () => {
     assert.equal(listed.length, 1);
     assert.ok(!JSON.stringify(listed).includes(made.key) && listed[0].key_hash === undefined, 'the key is shown once only');
 
-    const a = await createAsset(fx, fx.users.officer, { acquisition_cost: 777, latitude: 7.6, longitude: 36.8 });
+    const a = await createAsset(fx, fx.users.officer, { acquisition_cost: 777, latitude: 7.6731, longitude: 36.8344 });
     const get = (path, key = made.key) => api('get', `/api/integration/v1${path}`).set('X-API-Key', key);
-    const res = await get('/assets').expect(200);
+    // only the official register is shared: a draft (not yet verified or approved) stays inside
+    assert.ok(!(await get('/assets?page_size=500').expect(200)).body.data.some((r) => r.asset_id === a.asset_code));
+    await get(`/assets/${a.asset_code}`).expect(404);
+    await activateAsset(fx, a);
+    const res = await get('/assets?page_size=500').expect(200);
     const row = res.body.data.find((r) => r.asset_id === a.asset_code);
-    assert.equal(row.latitude, 7.6);
+    assert.equal(row.latitude, 7.6731);
     assert.ok(!JSON.stringify(res.body).includes('777') && row.acquisition_cost === undefined && row.current_valuation === undefined);
     assert.equal((await get(`/assets/${a.asset_code}`).expect(200)).body.name, a.name);
     await get('/assets/AST-999999').expect(404);
@@ -620,7 +624,22 @@ describe('system administration, API access and sessions', () => {
     assert.ok((await get('/sectors').expect(200)).body.length === 13);
     assert.ok((await get('/categories').expect(200)).body.length >= 5);
     assert.equal((await get('/assets?page_size=1').expect(200)).body.data.length, 1);
-    assert.equal((await get('/assets?status=ACTIVE').expect(200)).body.data.length, 0);
+    const active = (await get('/assets?status=ACTIVE&page_size=500').expect(200)).body.data;
+    assert.ok(active.some((r) => r.asset_id === a.asset_code) && active.every((r) => r.status === 'ACTIVE'));
+    // stable ids beside the names (version 1.1), so other systems never match by a name
+    const stored = await db('assets').where({ id: a.id }).first();
+    assert.deepEqual(row.ids, {
+      kifle_ketema: stored.kifle_ketema_id, kebele: stored.kebele_id, sector: stored.sector_id,
+      sector_code: (await db('sectors').where({ id: stored.sector_id }).first()).code, category: stored.category_id, type: stored.asset_type_id,
+    });
+    assert.equal(row.approval_state, 'ACTIVE');
+    assert.equal(row.archived, false);
+    // an archived asset leaves the list, but a system keeping references can still learn of it
+    await db('assets').where({ id: a.id }).update({ archived_at: db.fn.now() });
+    assert.ok(!(await get('/assets?page_size=500').expect(200)).body.data.some((r) => r.asset_id === a.asset_code));
+    const withArchived = (await get('/assets?page_size=500&include_archived=true').expect(200)).body.data;
+    assert.equal(withArchived.find((r) => r.asset_id === a.asset_code).archived, true);
+    await db('assets').where({ id: a.id }).update({ archived_at: null });
     await api('get', '/api/integration/v1/openapi.json').expect(200);
     await api('get', '/api/integration/v1/assets').expect(401);
     await get('/assets', 'jam_wrong').expect(401);
